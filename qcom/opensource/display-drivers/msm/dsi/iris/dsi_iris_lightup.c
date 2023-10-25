@@ -157,6 +157,7 @@ void iris_init(struct dsi_display *display, struct dsi_panel *panel)
 	pcfg->abyp_ctrl.abypass_mode = ANALOG_BYPASS_MODE; //default abyp
 
 	pcfg->pt_sr_enable = false;
+	pcfg->pt_sr_enable_restore = false;
 	pcfg->n2m_ratio = 1;
 	pcfg->dtg_ctrl_pt = 0;
 	pcfg->ocp_read_by_i2c = 1;
@@ -186,6 +187,7 @@ void iris_init(struct dsi_display *display, struct dsi_panel *panel)
 	iris_dual_status_clear(true);
 
 	atomic_set(&pcfg->fod_cnt, 0);
+	atomic_set(&pcfg->iris_esd_flag, 0);
 	iris_init_timing_switch();
 	iris_lp_init();
 
@@ -198,7 +200,7 @@ void iris_init(struct dsi_display *display, struct dsi_panel *panel)
 		iris_dbgfs_pq_init(display);
 		_iris_dbgfs_cont_splash_init(display);
 		iris_dbgfs_memc_init(display);
-		iris_dbgfs_loop_back_init(display);
+		iris_loop_back_init(display);
 		iris_dbgfs_adb_type_init(display);
 		iris_dbgfs_fw_calibrate_status_init();
 		iris_dbgfs_emv_init(display);
@@ -284,7 +286,9 @@ void iris_power_on(struct dsi_panel *panel)
 		IRIS_LOGW("%s(), vdd does not valid, use pmic", __func__);
 //		iris_control_pwr_regulator(true);
 	}
-
+#ifdef IRIS_EXT_CLK
+	iris_clk_enable(panel);
+#endif
 	usleep_range(5000, 5000);
 }
 
@@ -319,6 +323,7 @@ void iris_power_off(struct dsi_panel *panel)
 	}
 
 	iris_reset_off();
+	usleep_range(500, 510);
 #ifdef IRIS_EXT_CLK
 	iris_clk_disable(panel);
 #endif
@@ -326,6 +331,7 @@ void iris_power_off(struct dsi_panel *panel)
 		iris_disable_vdd();
 //	else
 //		iris_control_pwr_regulator(false);
+	msleep(45);
 	iris_control_pwr_regulator(false);
 
 }
@@ -1954,6 +1960,8 @@ static void _iris_parse_default_aux_size(struct iris_cfg *pcfg)
 	u32 SET0_PPS6, SET0_PPS7, SET0_PPS8, SET0_PPS9;
 
 	payload = iris_get_ipopt_payload_data(IRIS_IP_DSC_DEC_AUX, 0xF0, 2);
+	if (!payload)
+		return;
 	SET0_PPS6 = payload[4] >> 16 & 0xff;
 	SET0_PPS7 = payload[4] >> 24 & 0xff;
 	SET0_PPS8 = payload[5] >> 0 & 0xff;
@@ -3077,6 +3085,11 @@ static void _iris_send_lightup_pkt(void)
 	struct iris_cfg *pcfg = iris_get_cfg();
 	struct iris_ctrl_seq *pseq = _iris_get_ctrl_seq(pcfg);
 
+	if (!pseq) {
+		IRIS_LOGE("%s(), invalid pseq", __func__);
+		return;
+	}
+
 	SDE_ATRACE_BEGIN("_iris_send_lightup_pkt");
 	iris_send_assembled_pkt(pseq->ctrl_opt, pseq->cnt);
 	SDE_ATRACE_END("_iris_send_lightup_pkt");
@@ -3479,38 +3492,6 @@ int iris_lightup(struct dsi_panel *panel)
 	return 0;
 }
 
-static void _iris_bulksram_power_domain_proc(void)
-{
-	u32 i, value;
-	int rc = 0;
-
-	for (i = 0; i < 5; i++) {
-		usleep_range(1000, 1010);
-		rc = iris_ioctl_i2c_write(0xf0000068, 0x43);
-		if (rc < 0) {
-			IRIS_LOGE("i2c enable bulksram power failed, rc:%d", rc);
-			continue;
-		}
-		rc = iris_ioctl_i2c_read(0xf0000068, &value);
-		if ((rc < 0) || value != 0x43) {
-			IRIS_LOGE("i2c read bulksram power failed, value:%d, rc:%d", value, rc);
-			continue;
-		}
-		rc = iris_ioctl_i2c_write(0xf0000068, 0x03);
-		if (rc < 0) {
-			IRIS_LOGE("i2c disable bulksram power failed, rc:%d", rc);
-			continue;
-		}
-		rc = iris_ioctl_i2c_read(0xf0000068, &value);
-		if ((rc < 0) || value != 0x03) {
-			IRIS_LOGE("i2c read bulksram power failed, value:%d, rc:%d", value, rc);
-			continue;
-		}
-		break;
-	}
-	IRIS_LOGI("%s %d", __func__, i);
-}
-
 void iris_update_2nd_active_timing(struct dsi_panel *panel)
 {
 	struct iris_cfg *pcfg = iris_get_cfg();
@@ -3550,9 +3531,6 @@ int iris_enable(struct dsi_panel *panel, struct dsi_panel_cmd_set *on_cmds)
 	uint32_t timeus3 = 0;
 	uint32_t timeus4 = 0;
 
-#ifdef IRIS_EXT_CLK
-	iris_clk_enable(panel);
-#endif
 
 	if (pcfg->valid < PARAM_PREPARED) {
 		if (on_cmds != NULL)
@@ -3842,6 +3820,11 @@ static bool _iris_check_cont_splash_ipopt(uint8_t ip, uint8_t opt_id)
 	struct iris_cfg *pcfg = iris_get_cfg();
 	struct iris_ctrl_seq *pseq_cs = _iris_get_ctrl_seq_cs(pcfg);
 
+	if (!pseq_cs) {
+		IRIS_LOGE("%s(), invalid pseq_cs", __func__);
+		return false;
+	}
+
 	for (i = 0; i < pseq_cs->cnt; i++) {
 		cs_ip = pseq_cs->ctrl_opt[i].ip;
 		cs_opt_id = pseq_cs->ctrl_opt[i].opt_id;
@@ -3864,6 +3847,11 @@ static int _iris_select_cont_splash_ipopt(
 	struct iris_cfg *pcfg = iris_get_cfg();
 	struct iris_ctrl_seq *pseq = _iris_get_ctrl_seq(pcfg);
 	struct iris_ctrl_opt *pctrl_opt = NULL;
+
+	if (!pseq) {
+		IRIS_LOGE("%s(), invalid pseq", __func__);
+		return -EINVAL;
+	}
 
 	for (i = 0; i < pseq->cnt; i++) {
 		pctrl_opt = pseq->ctrl_opt + i;
@@ -4257,6 +4245,28 @@ void iris_update_bitmask_regval_nonread(
 
 	if (is_commit)
 		iris_send_ipopt_cmds(ip, opt_id);
+}
+
+uint32_t iris_get_regval_bitmask(int32_t ip, int32_t opt_id)
+{
+	uint32_t orig_val = 0;
+	uint32_t *data = NULL;
+	struct iris_ip_opt *popt = NULL;
+
+	popt = iris_find_ip_opt(ip, opt_id);
+	if (popt == NULL) {
+		IRIS_LOGE("%s(), can't find i_p: 0x%02x opt: 0x%02x",
+				__func__, ip, opt_id);
+		return 0;
+	} else if (popt->cmd_cnt != 1) {
+		IRIS_LOGE("%s(), invalid bitmask, i_p: 0x%02x opt: 0x%02x popt len: %d",
+				__func__,  ip, opt_id, popt->cmd_cnt);
+		return 0;
+	}
+
+	data = (uint32_t *)popt->cmd[0].msg.tx_buf;
+	orig_val = cpu_to_le32(data[2]);
+	return orig_val;
 }
 
 uint32_t iris_schedule_line_no_get(void)

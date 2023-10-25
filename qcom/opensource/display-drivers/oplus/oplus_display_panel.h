@@ -90,6 +90,9 @@ struct softiris_color
 	uint32_t color_dual_panel_status;
 	uint32_t color_dual_brightness_status;
 	uint32_t color_oplus_calibrate_status;
+	uint32_t color_samsung_status;
+	uint32_t color_loading_status;
+	uint32_t color_2nit_status;
 };
 
 struct kernel_loglevel {

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2021-2023 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2021-2022 Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2016-2021, The Linux Foundation. All rights reserved.
  */
 
@@ -38,6 +38,10 @@
 #include <soc/oplus/system/oplus_project.h>
 #endif /* OPLUS_FEATURE_DISPLAY */
 
+#ifdef OPLUS_FEATURE_DISPLAY_TEMP_COMPENSATION
+#include "../oplus/oplus_display_temp_compensation.h"
+#endif /* OPLUS_FEATURE_DISPLAY_TEMP_COMPENSATION */
+
 #ifdef OPLUS_FEATURE_DISPLAY_ONSCREENFINGERPRINT
 #include "../oplus/oplus_onscreenfingerprint.h"
 #endif /* OPLUS_FEATURE_DISPLAY_ONSCREENFINGERPRINT */
@@ -51,7 +55,6 @@
 #define MISR_BUFF_SIZE	256
 #define ESD_MODE_STRING_MAX_LEN 256
 #define ESD_TRIGGER_STRING_MAX_LEN 10
-#define CMD_SCHED_PARAM_MAX_BUFF_SIZE 256
 
 #define MAX_NAME_SIZE	64
 #define MAX_TE_RECHECKS 5
@@ -293,6 +296,8 @@ int dsi_display_set_backlight(struct drm_connector *connector,
 	oplus_panel_post_on_backlight(dsi_display, panel, bl_lvl);
 
 	bl_lvl = oplus_panel_silence_backlight(panel, bl_lvl);
+
+	oplus_printf_backlight_log(dsi_display, bl_lvl);
 #endif /* OPLUS_FEATURE_DISPLAY */
 
 	panel->bl_config.bl_level = bl_lvl;
@@ -840,7 +845,7 @@ static void dsi_display_parse_te_data(struct dsi_display *display)
 			"qcom,panel-te-source", &val);
 
 	if (rc || (val  > MAX_TE_SOURCE_ID)) {
-		DSI_ERR("invalid vsync source (%d) selection, rc = %d\n", val, rc);
+		DSI_ERR("invalid vsync source selection\n");
 		val = 0;
 	}
 
@@ -980,11 +985,7 @@ static int dsi_display_read_status(struct dsi_display_ctrl *ctrl,
 		cmds[i].msg.rx_len = config->status_cmds_rlen[i];
 		cmds[i].ctrl_flags = flags;
 		dsi_display_set_cmd_tx_ctrl_flags(display,&cmds[i]);
-		rc = dsi_ctrl_transfer_prepare(ctrl->ctrl, cmds[i].ctrl_flags);
-		if (rc) {
-			DSI_ERR("prepare for rx cmd transfer failed rc=%d\n", rc);
-			return rc;
-		}
+
 #if defined(CONFIG_PXLW_IRIS)
 		if (iris_is_chip_supported() && iris_is_pt_mode(display->panel)) {
 			struct dsi_panel_cmd_set cmdset;
@@ -993,20 +994,32 @@ static int dsi_display_read_status(struct dsi_display_ctrl *ctrl,
 			cmdset.count = 1;
 			cmdset.cmds = &cmds[i];
 			rc = iris_pt_send_panel_cmd(display->panel, &cmdset);
-			if (rc == 0)
+			if (rc == 0) {
 				rc = 1;
-		} else
-#endif
-		rc = dsi_ctrl_cmd_transfer(ctrl->ctrl, &cmds[i]);
-		if (rc <= 0) {
-			DSI_ERR("rx cmd transfer failed rc=%d\n", rc);
+				memcpy(config->return_buf + start,
+					config->status_buf, lenp[i]);
+				start += lenp[i];
+			}
 		} else {
-			memcpy(config->return_buf + start,
-				config->status_buf, lenp[i]);
-			start += lenp[i];
-		}
+#endif
+			rc = dsi_ctrl_transfer_prepare(ctrl->ctrl, cmds[i].ctrl_flags);
+			if (rc) {
+				DSI_ERR("prepare for rx cmd transfer failed rc=%d\n", rc);
+				return rc;
+			}
+			rc = dsi_ctrl_cmd_transfer(ctrl->ctrl, &cmds[i]);
+			if (rc <= 0) {
+				DSI_ERR("rx cmd transfer failed rc=%d\n", rc);
+			} else {
+				memcpy(config->return_buf + start,
+					config->status_buf, lenp[i]);
+				start += lenp[i];
+			}
 
-		dsi_ctrl_transfer_unprepare(ctrl->ctrl, cmds[i].ctrl_flags);
+			dsi_ctrl_transfer_unprepare(ctrl->ctrl, cmds[i].ctrl_flags);
+#if defined(CONFIG_PXLW_IRIS)
+		}
+#endif
 	}
 
 #if defined(CONFIG_PXLW_IRIS)
@@ -1136,7 +1149,6 @@ static int dsi_display_status_check_te(struct dsi_display *display,
 					esd_te_timeout)) {
 			DSI_ERR("TE check failed\n");
 			dsi_display_change_te_irq_status(display, false);
-			dsi_display_release_te_irq(display);
 			return -EINVAL;
 		}
 	}
@@ -1173,6 +1185,12 @@ int dsi_display_check_status(struct drm_connector *connector, void *display,
 		return -EINVAL;
 
 	panel = dsi_display->panel;
+
+#ifdef OPLUS_FEATURE_DISPLAY_TEMP_COMPENSATION
+	if (oplus_temp_compensation_is_supported()) {
+		oplus_temp_compensation_temp_check(display);
+	}
+#endif /* OPLUS_FEATURE_DISPLAY_TEMP_COMPENSATION */
 
 	dsi_panel_acquire_panel_lock(panel);
 
@@ -2091,11 +2109,11 @@ static ssize_t debugfs_update_cmd_scheduling_params(struct file *file,
 	if (*ppos)
 		return 0;
 
-	buf = kzalloc(CMD_SCHED_PARAM_MAX_BUFF_SIZE, GFP_KERNEL);
+	buf = kzalloc(256, GFP_KERNEL);
 	if (ZERO_OR_NULL_PTR(buf))
 		return -ENOMEM;
 
-	len = min_t(size_t, user_len, CMD_SCHED_PARAM_MAX_BUFF_SIZE - 1);
+	len = min_t(size_t, user_len, 255);
 	if (copy_from_user(buf, user_buf, len)) {
 		rc = -EINVAL;
 		goto error;
@@ -3073,7 +3091,7 @@ int dsi_display_phy_configure(void *priv, bool commit)
 	struct dsi_display *display = priv;
 	struct dsi_display_ctrl *m_ctrl;
 	struct dsi_pll_resource *pll_res;
-	struct link_clk_freq link_freq;
+	struct dsi_ctrl *ctrl;
 
 	if (!display) {
 		DSI_ERR("invalid arguments\n");
@@ -3095,15 +3113,9 @@ int dsi_display_phy_configure(void *priv, bool commit)
 		return -EINVAL;
 	}
 
-	rc = dsi_clk_get_link_frequencies(&link_freq, display->dsi_clk_handle,
-						display->clk_master_idx);
-	if (rc) {
-		DSI_ERR("Failed to get link frequencies\n");
-		return rc;
-	}
-
-	pll_res->byteclk_rate = link_freq.byte_clk_rate;
-	pll_res->pclk_rate = link_freq.pix_clk_rate;
+	ctrl = m_ctrl->ctrl;
+	pll_res->byteclk_rate = ctrl->clk_freq.byte_clk_rate;
+	pll_res->pclk_rate = ctrl->clk_freq.pix_clk_rate;
 
 	rc = dsi_phy_configure(m_ctrl->phy, commit);
 
@@ -3635,8 +3647,7 @@ static int dsi_host_detach(struct mipi_dsi_host *host,
 int dsi_host_transfer_sub(struct mipi_dsi_host *host, struct dsi_cmd_desc *cmd)
 {
 	struct dsi_display *display;
-	struct dsi_display_ctrl *ctrl;
-	int i, rc = 0;
+	int rc = 0;
 
 	if (!host || !cmd) {
 		DSI_ERR("Invalid params\n");
@@ -3648,16 +3659,6 @@ int dsi_host_transfer_sub(struct mipi_dsi_host *host, struct dsi_cmd_desc *cmd)
 	/* Avoid sending DCS commands when ESD recovery is pending */
 	if (atomic_read(&display->panel->esd_recovery_pending)) {
 		DSI_DEBUG("ESD recovery pending\n");
-		display_for_each_ctrl(i, display) {
-			ctrl = &display->ctrl[i];
-			if ((!ctrl) || (!ctrl->ctrl))
-				continue;
-			if ((ctrl->ctrl->pending_cmd_flags & DSI_CTRL_CMD_FETCH_MEMORY) &&
-				ctrl->ctrl->cmd_len != 0) {
-				dsi_ctrl_transfer_cleanup(ctrl->ctrl);
-				ctrl->ctrl->cmd_len = 0;
-			}
-		}
 		return 0;
 	}
 
@@ -4493,7 +4494,6 @@ static int dsi_display_res_init(struct dsi_display *display)
 	}
 
 #ifdef OPLUS_FEATURE_DISPLAY
-	/* OPLUS_FEATURE_ADFR, oplus adfr */
 #if defined(CONFIG_PXLW_IRIS)
 	if (iris_is_chip_supported()) {
 		if (!strcmp(display->display_type, "primary")) {
@@ -4519,6 +4519,10 @@ static int dsi_display_res_init(struct dsi_display *display)
 		display->panel = NULL;
 		goto error_ctrl_put;
 	}
+
+#ifdef OPLUS_FEATURE_DISPLAY_TEMP_COMPENSATION
+	oplus_temp_compensation_init(display->panel);
+#endif /* OPLUS_FEATURE_DISPLAY_TEMP_COMPENSATION */
 
 #if defined(CONFIG_PXLW_IRIS) || defined(CONFIG_PXLW_SOFT_IRIS)
 	iris_dsi_display_res_init(display);
@@ -4750,29 +4754,6 @@ void dsi_display_update_byte_intf_div(struct dsi_display *display)
 	config->byte_intf_clk_div = 2;
 }
 
-static int dsi_display_set_link_frequencies(struct dsi_display *display)
-{
-	int rc = 0, i = 0;
-
-	dsi_clk_acquire_mngr_lock(display->dsi_clk_handle);
-	display_for_each_ctrl(i, display) {
-		struct dsi_display_ctrl *ctrl = &display->ctrl[i];
-
-		rc = dsi_clk_set_link_frequencies(display->dsi_clk_handle,
-							ctrl->ctrl->clk_freq,
-							ctrl->ctrl->cell_index);
-		if (rc) {
-			DSI_ERR("Failed to update link frequencies of ctrl_%d, rc=%d\n",
-							ctrl->ctrl->cell_index, rc);
-			dsi_clk_release_mngr_lock(display->dsi_clk_handle);
-			return rc;
-		}
-	}
-	dsi_clk_release_mngr_lock(display->dsi_clk_handle);
-
-	return rc;
-}
-
 static int dsi_display_update_dsi_bitrate(struct dsi_display *display,
 					  u32 bit_clk_rate)
 {
@@ -4855,6 +4836,12 @@ static int dsi_display_update_dsi_bitrate(struct dsi_display *display,
 		ctrl->clk_freq.byte_clk_rate = byte_clk_rate;
 		ctrl->clk_freq.byte_intf_clk_rate = byte_intf_clk_rate;
 		ctrl->clk_freq.pix_clk_rate = pclk_rate;
+		rc = dsi_clk_set_link_frequencies(display->dsi_clk_handle,
+			ctrl->clk_freq, ctrl->cell_index);
+		if (rc) {
+			DSI_ERR("Failed to update link frequencies\n");
+			goto error;
+		}
 
 		ctrl->host_config.bit_clk_rate_hz = bit_clk_rate;
 error:
@@ -4863,12 +4850,6 @@ error:
 		/* TODO: recover ctrl->clk_freq in case of failure */
 		if (rc)
 			return rc;
-	}
-
-	rc = dsi_display_set_link_frequencies(display);
-	if (rc) {
-		DSI_ERR("Failed to set display link frequencies\n");
-		return rc;
 	}
 
 	return 0;
@@ -5525,15 +5506,6 @@ static int dsi_display_set_mode_sub(struct dsi_display *display,
 		}
 	}
 
-	if (!(mode->dsi_mode_flags & (DSI_MODE_FLAG_SEAMLESS | DSI_MODE_FLAG_VRR |
-		       DSI_MODE_FLAG_DYN_CLK))) {
-		rc = dsi_display_set_link_frequencies(display);
-		if (rc) {
-			DSI_ERR("Failed to set display link frequencies\n");
-			goto error;
-		}
-	}
-
 	if ((mode->dsi_mode_flags & DSI_MODE_FLAG_DMS) &&
 			(display->panel->panel_mode == DSI_OP_CMD_MODE)) {
 		u64 cur_bitclk = display->panel->cur_mode->timing.clk_rate_hz;
@@ -5603,7 +5575,7 @@ static int _dsi_display_dev_init(struct dsi_display *display)
 	rc = dsi_display_res_init(display);
 	if (rc) {
 		DSI_ERR("[%s] failed to initialize resources, rc=%d\n",
-			display->name, rc);
+		       display->name, rc);
 		goto error;
 	}
 
@@ -6281,7 +6253,7 @@ static int dsi_display_init(struct dsi_display *display)
 
 	rc = _dsi_display_dev_init(display);
 	if (rc) {
-		DSI_ERR("device init failed for %s, rc=%d\n", display->display_type, rc);
+		DSI_ERR("device init failed, rc=%d\n", rc);
 		goto end;
 	}
 
@@ -6368,6 +6340,11 @@ static struct device_node *_iris_dsi_display_get_panel_node(struct platform_devi
 		return NULL;
 	}
 
+	if (!strcmp(boot_displays[DSI_PRIMARY].name, "qcom,mdss_dsi_oplus_boe_rm692e5_1080_2412_dsc_cmd")) {
+		DSI_INFO("enter FTM mode and no connect with panel!\n");
+		return NULL;
+	}
+
 	node = pdev->dev.of_node;
 	mdp_node = of_parse_phandle(node, "qcom,mdp", 0);
 	if (!mdp_node) {
@@ -6407,7 +6384,6 @@ int dsi_display_dev_probe(struct platform_device *pdev)
 #if defined(CONFIG_PXLW_IRIS)
 	bool is_sencondary_panel = false;
 #endif
-
 	if (!pdev || !pdev->dev.of_node) {
 		DSI_ERR("pdev not found\n");
 		rc = -ENODEV;
@@ -6453,20 +6429,28 @@ int dsi_display_dev_probe(struct platform_device *pdev)
 
 	boot_disp = &boot_displays[index];
 	node = pdev->dev.of_node;
+#if defined(CONFIG_PXLW_IRIS)
+	if (is_project(22811)) {
+		DSI_INFO("This project support iris...\n");
+		if (!strcmp(boot_displays[0].name, "qcom,mdss_dsi_panel_samsung_amb670yf08_cs_1440_3216_dsc_cmd"))
+			is_sencondary_panel = true;
+		else
+			is_sencondary_panel = false;
+		_iris_dsi_display_get_panel_node(pdev, index, true, is_sencondary_panel);
+	} else if (is_project(22851) || is_project(22635) || is_project(23603) || is_project(22714)
+			|| is_project(23667)) {
+		DSI_INFO("This project support iris***\n");
+		if (!strcmp(boot_displays[0].name, "qcom,mdss_dsi_oplus_zonda_sec_tianma_nt37705_1240_2772_dsc_cmd"))
+			is_sencondary_panel = true;
+		else
+			is_sencondary_panel = false;
+		_iris_dsi_display_get_panel_node(pdev, index, true, is_sencondary_panel);
+	} else {
+		DSI_INFO("This project does not support iris\n");
+	}
+#endif
 	if (boot_disp->boot_disp_en) {
 		/* The panel name should be same as UEFI name index */
-#if defined(CONFIG_PXLW_IRIS)
-		if (is_project(22811)) {
-			DSI_INFO("This project support iris...\n");
-			if (!strcmp(boot_displays[0].name, "qcom,mdss_dsi_panel_samsung_amb670yf08_cs_1440_3216_dsc_cmd"))
-				is_sencondary_panel = true;
-			else
-				is_sencondary_panel = false;
-			_iris_dsi_display_get_panel_node(pdev, index, boot_disp->boot_disp_en, is_sencondary_panel);
-		} else {
-			DSI_INFO("This project does not support iris\n");
-		}
-#endif
 		panel_node = of_find_node_by_name(mdp_node, boot_disp->name);
 		if (!panel_node)
 			DSI_WARN("%s panel_node %s not found\n", display->display_type,
@@ -6474,18 +6458,6 @@ int dsi_display_dev_probe(struct platform_device *pdev)
 	} else {
 		panel_node = of_parse_phandle(node,
 				"qcom,dsi-default-panel", 0);
-#if defined(CONFIG_PXLW_IRIS)
-		if (is_project(22811)) {
-			DSI_INFO("This project support iris+++\n");
-			if (!strcmp(boot_displays[0].name, "qcom,mdss_dsi_panel_samsung_amb670yf08_cs_1440_3216_dsc_cmd"))
-				is_sencondary_panel = true;
-			else
-				is_sencondary_panel = false;
-			panel_node = _iris_dsi_display_get_panel_node(pdev, index, boot_disp->boot_disp_en, is_sencondary_panel);
-		} else {
-			DSI_INFO("This project does not support iris\n");
-		}
-#endif
 		if (!panel_node)
 			DSI_INFO("%s default panel not found\n", display->display_type);
 	}
@@ -7919,13 +7891,6 @@ int dsi_display_update_transfer_time(void *display, u32 transfer_time)
 			return rc;
 		}
 	}
-
-	rc = dsi_display_set_link_frequencies(disp);
-	if (rc) {
-		DSI_ERR("Failed to set display link frequencies\n");
-		return rc;
-	}
-
 	atomic_set(&disp->clkrate_change_pending, 1);
 
 	return 0;
@@ -8346,6 +8311,11 @@ int dsi_display_set_mode(struct dsi_display *display,
 			adj_mode.priv_info->clk_rate_hz);
 
 	memcpy(display->panel->cur_mode, &adj_mode, sizeof(adj_mode));
+#if defined(CONFIG_PXLW_IRIS)
+	if (iris_is_chip_supported() && (display->config.panel_mode == DSI_OP_VIDEO_MODE))
+		iris_update_panel_ap_te(timing.refresh_rate);
+#endif
+
 error:
 	mutex_unlock(&display->display_lock);
 	return rc;
@@ -8383,6 +8353,30 @@ int dsi_display_set_tpg_state(struct dsi_display *display, bool enable,
 
 	display->is_tpg_enabled = enable;
 error:
+	return rc;
+}
+
+int dsi_display_override_dma_cmd_trig(struct dsi_display *display,
+		enum dsi_trigger_type type)
+{
+	int rc = 0;
+	int i;
+	struct dsi_display_ctrl *ctrl;
+
+	if (!display) {
+		DSI_ERR("Invalid params\n");
+		return -EINVAL;
+	}
+
+	display_for_each_ctrl(i, display) {
+		ctrl = &display->ctrl[i];
+		rc = dsi_ctrl_override_dma_cmd_trig(ctrl->ctrl, type);
+		if (rc) {
+			DSI_ERR("[%s] failed to override dma cmd trigger type for host_%d\n",
+			       display->name, i);
+			break;
+		}
+	}
 	return rc;
 }
 
@@ -8729,6 +8723,12 @@ int dsi_display_prepare(struct dsi_display *display)
 		return -EINVAL;
 	}
 
+#ifdef OPLUS_FEATURE_DISPLAY_TEMP_COMPENSATION
+	if (oplus_temp_compensation_is_supported()) {
+		oplus_temp_compensation_register_ntc_channel(display);
+	}
+#endif /* OPLUS_FEATURE_DISPLAY_TEMP_COMPENSATION */
+
 	SDE_EVT32(SDE_EVTLOG_FUNC_ENTRY);
 	mutex_lock(&display->display_lock);
 
@@ -8851,6 +8851,7 @@ int dsi_display_prepare(struct dsi_display *display)
 			}
 		}
 	}
+
 	goto error;
 
 error_ctrl_link_off:
@@ -8935,7 +8936,6 @@ static int dsi_display_qsync(struct dsi_display *display, bool enable)
 	int rc = 0;
 
 	mutex_lock(&display->display_lock);
-	display->queue_cmd_waits = true;
 
 	display_for_each_ctrl(i, display) {
 		if (enable) {
@@ -8958,7 +8958,6 @@ static int dsi_display_qsync(struct dsi_display *display, bool enable)
 	}
 
 exit:
-	display->queue_cmd_waits = false;
 	SDE_EVT32(enable, display->panel->qsync_caps.qsync_min_fps, rc);
 	mutex_unlock(&display->display_lock);
 	return rc;
@@ -9061,16 +9060,11 @@ int dsi_display_pre_kickoff(struct drm_connector *connector,
 		if (mode->priv_info->phy_timing_len) {
 			display_for_each_ctrl(i, display) {
 				struct dsi_display_ctrl *ctrl;
-				bool commit_phy_timing = false;
-
-				if (mode->dsi_mode_flags & DSI_MODE_FLAG_DMS)
-					commit_phy_timing = true;
-
 				ctrl = &display->ctrl[i];
 				ret = dsi_phy_set_timing_params(ctrl->phy,
 						mode->priv_info->phy_timing_val,
 						mode->priv_info->phy_timing_len,
-						commit_phy_timing);
+						true);
 				if (ret)
 					DSI_ERR("failed to add DSI PHY timing params\n");
 			}
@@ -9336,6 +9330,12 @@ error_disable_panel:
 	(void)dsi_panel_disable(display->panel);
 error:
 	mutex_unlock(&display->display_lock);
+
+#ifdef OPLUS_FEATURE_DISPLAY_TEMP_COMPENSATION
+	if (oplus_temp_compensation_is_supported()) {
+		oplus_temp_compensation_data_update(display);
+	}
+#endif /* OPLUS_FEATURE_DISPLAY_TEMP_COMPENSATION */
 
 #ifdef OPLUS_FEATURE_DISPLAY
 	/* OPLUS_FEATURE_ADFR, qsync enhance */

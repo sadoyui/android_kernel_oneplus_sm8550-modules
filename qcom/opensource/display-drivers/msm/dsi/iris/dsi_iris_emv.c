@@ -286,6 +286,8 @@ void iris_emv_pwil_vfr_disable(bool lli, bool batch)
 
 	//frc_ctrl frc_init
 	payload = iris_get_ipopt_payload_data(IRIS_IP_PWIL, 0x70, 2);
+	if (!payload)
+		return;
 	ctrl[0] = payload[0];
 	ctrl[0] &= ~(0x1);
 
@@ -315,6 +317,8 @@ void iris_emv_pwil_frc_ctrl(bool vfr, bool gmd, bool mvc, bool fmd, int numVdBuf
 
 	//frc_ctrl frc_init
 	payload = iris_get_ipopt_payload_data(IRIS_IP_PWIL, 0x70, 2);
+	if (!payload)
+		return;
 	ctrl[0] = payload[0];
 	ctrl[1] = payload[1];
 	if (vfr)
@@ -437,6 +441,8 @@ void iris_emv_sys_channels_swap_ctrl(bool rx_ch_swap, bool batch)
 
 	//ec set channel swap shadow mode
 	payload = iris_get_ipopt_payload_data(IRIS_IP_SYS, ID_SYS_TE_SWAP, 2);
+	if (!payload)
+		return;
 	addr[0] = payload[0];
 	value[0] = payload[1];
 	//value[0] |= 0x000e2000; // check mipi_rx, pwil_0, pwil_1 idle
@@ -451,6 +457,8 @@ void iris_emv_sys_channels_swap_ctrl(bool rx_ch_swap, bool batch)
 
 	//e4
 	payload = iris_get_ipopt_payload_data(IRIS_IP_SYS, ID_SYS_TE_BYPASS, 2);
+	if (!payload)
+		return;
 	addr[1] = payload[0];
 	value[1] = payload[1];
 	value[1] &= ~(0x00080000);
@@ -592,6 +600,8 @@ void iris_emv_pwil_vidbuffer_alloc(bool emv, bool lli, bool batch)
 	if (lli) {
 		//video_ctrl
 		payload = iris_get_ipopt_payload_data(IRIS_IP_PWIL, 0xB0, 2);
+		if (!payload)
+			return;
 		ctrl[0] = addr;
 		/* update cmdlist */
 		payload[7] = ctrl[0];
@@ -639,7 +649,10 @@ u32 iris_emv_pwil_mv1buffer_base_addr_get(void)
 
 	//get mv1 base addr2
 	payload = iris_get_ipopt_payload_data(IRIS_IP_PWIL, 0xe1, 9);
-	addr = payload[0];
+	if (!payload)
+		addr = 0x00271000;
+	else
+		addr = payload[0];
 	IRIS_LOGI("%s: MV1_BASE_ADDR2 = 0x%x", __func__, addr);
 	if (addr == 0)
 		addr = 0x00271000;
@@ -685,6 +698,8 @@ void iris_emv_pwil_mvdbuffer_alloc(bool lli, bool batch)
 	if (lli) {
 		//MV0_BASE_ADDR0
 		payload = iris_get_ipopt_payload_data(IRIS_IP_PWIL, 0xe1, 2);
+		if (!payload)
+			return;
 		payload[0] = 0;
 		payload[1] = 0;
 		payload[2] = addr[1];//mv0_2
@@ -730,6 +745,8 @@ void iris_emv_pwil_mv_capt_enable_ctrl(bool enable, bool use_meta, bool lli, boo
 	if (lli) {
 		//INPUT_META_CTRL
 		payload = iris_get_ipopt_payload_data(IRIS_IP_PWIL, 0xe0, 2);
+		if (!payload)
+			return;
 		payload[0] = value;
 
 		iris_init_update_ipopt_t(IRIS_IP_PWIL, 0xe0, 0xe0, 0);
@@ -762,6 +779,8 @@ void iris_emv_pwil_duplicate_frame_filter_ctrl(bool enable, bool lli, bool batch
 
 	//PWIL_PIAD_BLEND_INFO
 	payload = iris_get_ipopt_payload_data(IRIS_IP_PWIL, 0x90, 2);
+	if (!payload)
+		return;
 	value = payload[0];
 	if (enable)
 		value |= 0x8;
@@ -831,6 +850,8 @@ void iris_emv_pwil_capt_enable_ctrl(bool enable, bool lli, bool batch)
 		/* update cmdlist */
 		//PWIL_CAPT_CTRL0
 		payload = iris_get_ipopt_payload_data(IRIS_IP_PWIL, 0xF0, 7);
+		if (!payload)
+			return;
 		payload[0] = value;
 		iris_init_update_ipopt_t(IRIS_IP_PWIL, 0xF0, 0xF0, 0);
 		iris_update_pq_opt(PATH_DSI, iris_emv_instant_send);
@@ -881,13 +902,19 @@ void iris_emv_blending_flush_ctrl(bool video, bool graphic, bool osd, bool batch
 
 	if (forPT) {
 		payload = iris_get_ipopt_payload_data(IRIS_IP_BLEND, 0x10, 2);
+		if (!payload)
+			return;
 		valueCsrTo = payload[0];
 	} else {
 		payload = iris_get_ipopt_payload_data(IRIS_IP_BLEND, 0x20, 2);
+		if (!payload)
+			return;
 		valueCsrTo = payload[0];
 	}
 
 	payload = iris_get_ipopt_payload_data(IRIS_IP_BLEND, 0xF0, 2);
+	if (!payload)
+		return;
 	value = payload[0];
 	value &= ~(0x1C);
 	value |= flush;
@@ -928,6 +955,8 @@ void iris_emv_pwil_dport_control(int count, bool lli, bool batch)
 
 	//pwil: disp PWIL_DISP_CTRL1
 	payload = iris_get_ipopt_payload_data(IRIS_IP_PWIL, 0xD0, 2);
+	if (!payload)
+		return;
 
 	if (lli) {
 		/* update cmdlist */
@@ -967,6 +996,8 @@ void iris_emv_pwil_configure_cmd_ctrl(int col, int width,
 	if (lli) {
 		//cmd_ctrl
 		payload = iris_get_ipopt_payload_data(IRIS_IP_PWIL, 0x60, 2);
+		if (!payload)
+			return;
 
 		/* update cmdlist */
 		payload[0] = ctrl[0];
@@ -1023,6 +1054,8 @@ void iris_emv_pwil_configure_graphic_ctrl(int width, int height, bool compressed
 	if (lli) {
 		//graphic_ctrl
 		payload = iris_get_ipopt_payload_data(IRIS_IP_PWIL, 0xA0, 2);
+		if (!payload)
+			return;
 		ctrl[0] = payload[0];
 		if (!last_graphicinfo_saved && emvEnter) {
 			graphic_ctrl_1_saved = payload[1];
@@ -1030,6 +1063,8 @@ void iris_emv_pwil_configure_graphic_ctrl(int width, int height, bool compressed
 		}
 
 		ctrl[1] = emvEnter ? (disp_dsc_en ? 0x00040888 : 0x00000888) : graphic_ctrl_1_saved;
+		if (ctrl[1] == 0)
+			ctrl[1] = (payload[1] != 0) ? payload[1] : 0x00040888;
 
 		/* update cmdlist */
 		payload[0] = ctrl[0];
@@ -1128,6 +1163,8 @@ void iris_emv_pwil_configure_video_ctrl(int left, int top,
 	if (lli) {
 		//video_ctrl
 		payload = iris_get_ipopt_payload_data(IRIS_IP_PWIL, 0xB0, 2);
+		if (!payload)
+			return;
 		ctrl[0] = payload[0];
 		ctrl[0] &= (~0xf);
 		ctrl[0] |= (numVdBuff&0xf);
@@ -1265,6 +1302,8 @@ void iris_emv_pwil_configure_mv_ctrl(int videoWidth, int videoHeight, bool lli, 
 	if (lli) {
 		//PWIL_MV0_CTRL0
 		payload = iris_get_ipopt_payload_data(IRIS_IP_PWIL, 0xe0, 3);
+		if (!payload)
+			return;
 		/* update cmdlist */
 		payload[0] = ctrl[0];//MV0_CTRL0
 		payload[1] = ctrl[1];//MV0_CTRL1
@@ -1278,6 +1317,8 @@ void iris_emv_pwil_configure_mv_ctrl(int videoWidth, int videoHeight, bool lli, 
 
 		//PWIL_MV_H_STRIDE
 		payload = iris_get_ipopt_payload_data(IRIS_IP_PWIL, 0xe1, 11);
+		if (!payload)
+			return;
 		payload[0] = ctrl[8];//PWIL_MV_H_STRIDE
 		iris_init_update_ipopt_t(IRIS_IP_PWIL, 0xe1, 0xe1, 0);
 
@@ -1325,6 +1366,8 @@ void iris_emv_pwil_shortpacket_mask_ctrl(int enable, bool updatelli, bool batch)
 	u32 *payload = NULL;
 
 	payload = iris_get_ipopt_payload_data(IRIS_IP_PWIL, 0xF0, 2);
+	if (!payload)
+		return;
 	value = payload[0];
 	if (enable)
 		value |= 0x8;
@@ -1373,6 +1416,8 @@ void iris_emv_pwil_configure_path_ctrl_0(bool lli, bool batch)
 	if (lli) {
 		// pwil: ctrl 0: DATA_PATH_CTRL0
 		payload = iris_get_ipopt_payload_data(IRIS_IP_PWIL, 0xF0, 4);
+		if (!payload)
+			return;
 
 		if ((value&payload[0]) != value) {
 			IRIS_LOGE("%s: Insufficient DATA_PATH_CTRL0 for emv = 0x%x",
@@ -1416,10 +1461,14 @@ void iris_emv_pwil_configure_sliceinfo_ctrl(bool enterEmv, bool lli, bool batch)
 	if (lli) {
 		if (!enterEmv) {
 			payload = iris_get_ipopt_payload_data(IRIS_IP_PWIL_2, 0xF0, 9);
+			if (!payload)
+				return;
 			ctrl[0] = payload[0];
 			ctrl[1] = payload[1];
 		}
 		payload = iris_get_ipopt_payload_data(IRIS_IP_PWIL, 0xF0, 8);
+		if (!payload)
+			return;
 		payload[0] = ctrl[0];
 		payload[1] = ctrl[1];
 		iris_init_update_ipopt_t(IRIS_IP_PWIL, 0xF0, 0xF0, 0);
@@ -1458,6 +1507,8 @@ void iris_emv_pwil_path_ctrl_1_configure(bool scalerup, bool scalerdown, bool sr
 	if (lli) {
 		//DATA_PATH_CTRL1
 		payload = iris_get_ipopt_payload_data(IRIS_IP_PWIL, 0xF0, 5);
+		if (!payload)
+			return;
 		value = payload[0];
 	}
 
@@ -2120,7 +2171,17 @@ void iris_emv_on_mipi1_up(void)
 			iris_emv_mode_switch(IRIS_EMV_ON_PREPARE);
 			iris_emv_mode_switch(IRIS_EMV_ON_SWAP);
 		}
-	}
+	} else
+		iris_osd_pipeline_switch(false);
+}
+
+void iris_osd_pipeline_switch(bool on)
+{
+	IRIS_LOGI("%s: osd pipeline switch to %d", __func__, on);
+	if (on)
+		iris_emv_mode_switch(IRIS_EMV_OPEN_PIPE_1);
+	else
+		iris_emv_mode_switch(IRIS_EMV_CLOSE_PIPE_1);
 }
 
 void iris_emv_on_mipi1_down(void)
@@ -2186,6 +2247,10 @@ bool iris_emv_on_dual_on(bool success)
 		}
 		return idle;
 	}
+
+	if (success
+		&& (!iris_emv_game_mode_enabled()))
+		iris_osd_pipeline_switch(true);
 
 	return true;
 }
@@ -2507,10 +2572,10 @@ void iris_emv_on_lightoff(void)
 	last_graphicinfo_saved = false;
 }
 
-bool iris_dump_once(void)
+bool iris_dump_once(u32 flag)
 {
-	if (iris_emv_dump_once > 0) {
-		iris_emv_dump_once = 0;
+	if (iris_emv_dump_once & flag) {
+		iris_emv_dump_once &= ~flag;
 		return true;
 	}
 	return false;

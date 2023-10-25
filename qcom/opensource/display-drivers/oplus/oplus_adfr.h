@@ -3,7 +3,7 @@
 ** File : oplus_adfr.h
 ** Description : ADFR kernel module
 ** Version : 1.0
-** Date : 2020/10/23
+** Date : 2022/08/01
 ** Author : Display
 ******************************************************************/
 
@@ -108,7 +108,9 @@ enum oplus_adfr_auto_fakeframe_value {
 enum oplus_adfr_auto_min_fps_value {
 	OPLUS_ADFR_AUTO_MIN_FPS_MAX = 0x00,
 	OPLUS_ADFR_AUTO_MIN_FPS_60HZ = 0x01,
+	OPLUS_ADFR_AUTO_MIN_FPS_40HZ = 0x02,
 	OPLUS_ADFR_AUTO_MIN_FPS_30HZ = 0x03,
+	OPLUS_ADFR_AUTO_MIN_FPS_24HZ = 0x04,
 	OPLUS_ADFR_AUTO_MIN_FPS_20HZ = 0x05,
 	OPLUS_ADFR_AUTO_MIN_FPS_10HZ = 0x0B,
 	OPLUS_ADFR_AUTO_MIN_FPS_1HZ = 0x77,
@@ -268,6 +270,8 @@ bool oplus_adfr_auto_on_cmd_filter_get(void);
 int oplus_adfr_handle_auto_mode(u32 propval);
 int dsi_display_auto_mode_update(void *dsi_display);
 bool oplus_adfr_has_auto_mode(u32 value);
+int oplus_adfr_send_min_fps_event(unsigned int h_skew, unsigned int min_fps);
+int oplus_adfr_temperature_detection_handle(void *display, int ntc_temp, int shell_temp);
 
 /* --------------- idle mode -------------- */
 /* ADFR:Add for idle mode control */

@@ -78,6 +78,9 @@ void iris_sde_update_dither_depth_map(uint32_t *map, uint32_t depth)
 	}
 }
 
+void iris_sde_prepare_commit(uint32_t num_phys_encs, void *phys_enc)
+{
+}
 
 void iris_sde_prepare_for_kickoff(uint32_t num_phys_encs, void *phys_enc)
 {

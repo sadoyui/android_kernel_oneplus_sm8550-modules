@@ -16,7 +16,11 @@
 #include "sde_encoder_phys.h"
 #include "sde_trace.h"
 #include <linux/msm_drm_notify.h>
-#include "../../../../../sm8550/drivers/input/touchscreen/oplus_touchscreen_v2/touchpanel_notify/touchpanel_event_notify.h"
+#include "../../../oplus/kernel/touchpanel/oplus_touchscreen_v2/touchpanel_notify/touchpanel_event_notify.h"
+
+#ifdef OPLUS_FEATURE_DISPLAY_TEMP_COMPENSATION
+#include "oplus_display_temp_compensation.h"
+#endif /* OPLUS_FEATURE_DISPLAY_TEMP_COMPENSATION */
 
 #if defined(CONFIG_PXLW_IRIS)
 #include "dsi_iris_api.h"
@@ -614,6 +618,7 @@ static int oplus_ofp_panel_cmd_set_nolock(void *dsi_panel, enum dsi_cmd_set_type
 	switch (type) {
 	case DSI_CMD_HBM_ON:
 		oplus_ofp_set_hbm_state(true);
+		oplus_hbm_pwm_state(panel, true);
 
 		/* do not use loading effect compensation mode to FOD sensing, it causes the luminance drop in FOD pattern */
 		OPLUS_OFP_TRACE_BEGIN("dsi_panel_seed_mode");
@@ -622,10 +627,20 @@ static int oplus_ofp_panel_cmd_set_nolock(void *dsi_panel, enum dsi_cmd_set_type
 			OFP_ERR("failed to set seed mode:PANEL_LOADING_EFFECT_OFF\n");
 		}
 		OPLUS_OFP_TRACE_END("dsi_panel_seed_mode");
+
+#ifdef OPLUS_FEATURE_DISPLAY_TEMP_COMPENSATION
+		if (oplus_temp_compensation_is_supported()) {
+			rc = oplus_temp_compensation_cmd_set(panel, OPLUS_TEMP_COMPENSATION_FOD_ON_SETTING);
+			if (rc) {
+				OFP_ERR("failed to set temp compensation cmd, rc=%d\n", rc);
+			}
+		}
+#endif /* OPLUS_FEATURE_DISPLAY_TEMP_COMPENSATION */
 		break;
 
 	case DSI_CMD_HBM_OFF:
 		oplus_ofp_set_hbm_state(false);
+		oplus_hbm_pwm_state(panel, false);
 
 		/*
 		 if backlight level is in global hbm range before hbm on, reset the oplus_global_hbm_flags,
@@ -1508,6 +1523,10 @@ bool oplus_ofp_backlight_filter(void *dsi_panel, unsigned int bl_level)
 		need_filter_backlight = true;
 	} else if (p_oplus_ofp_params->dimlayer_hbm || hbm_enable) {
 		OFP_INFO("backlight lvl:%u\n", bl_level);
+	}
+
+	if (panel->oplus_priv.pwm_switch_support) {
+		panel->pwm_hbm_state = need_filter_backlight;
 	}
 
 	OPLUS_OFP_TRACE_END("oplus_ofp_backlight_filter");

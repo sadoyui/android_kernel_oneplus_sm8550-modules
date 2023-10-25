@@ -26,7 +26,10 @@
 #include "dsi_iris_i3c.h"
 #include "dsi_iris_dts_fw.h"
 #include "../../../oplus/oplus_adfr.h"
+#include <soc/oplus/system/oplus_project.h>
 
+static u32 debug_memc_level_overwrite;
+static u32 judder_angle = 150;
 static u32 iris_sr_enable = 1;
 static u32 debug_disable_vfr_dual = false;
 static u32 debug_disable_frc_dynen = false;
@@ -48,6 +51,7 @@ static u32 debug_tnr_en_overwrite = 0;
 static u32 debug_frc_vfr_overwrite = 0;
 static u32 debug_n2m_mode_overwrite = 0;
 static u32 debug_mv_res_overwrite = 0;
+static u32 mv_res_overwrite = 0x85A00320;
 static u32 debug_eco_overwrite;
 extern u32 debug_disable_mipi1_autorefresh;
 
@@ -81,13 +85,6 @@ int iris_low_latency_mode_get(void)
 	struct iris_cfg *pcfg = iris_get_cfg();
 
 	return pcfg->memc_info.low_latency_mode;
-}
-
-int iris_osd_protect_mode_get(void)
-{
-	struct iris_cfg *pcfg = iris_get_cfg();
-
-	return pcfg->osd_protect_mode;
 }
 
 int iris_tnr_mode_get(void)
@@ -125,6 +122,8 @@ u32 iris_disp_vtotal_get(void)
 	uint32_t vtotal;
 
 	payload = iris_get_ipopt_payload_data(IRIS_IP_DTG, 0x00, 2);
+	if (!payload)
+		return 0;
 	vtotal = payload[4] + payload[5] + payload[6]  + payload[7];
 
 	return vtotal;
@@ -175,6 +174,7 @@ void iris_frc_mif_reg_set(void)
 {
 	struct iris_cfg *pcfg = iris_get_cfg();
 	struct iris_frc_setting *frc_setting = &pcfg->frc_setting;
+	bool enableGameMode = false;
 
 	u32 val_frcc_reg0 = 0x001b0101;
 	u32 val_frcc_reg1 = 0;
@@ -185,11 +185,13 @@ void iris_frc_mif_reg_set(void)
 	u32 val_frcc_phase_ctrl_1 = 0x00551919;
 	u32 val_frcc_fk_ctrl_3 = 0x3c3e0218;
 	u32 val_frcc_fk_ctrl_4 = 0x8000332d;
+	u32 val_frcc_fk_ctrl_5 = 0x0051a7a8;
 	u32 val_frcc_enable_0 = 0x0025d49f;
 	u32 val_frcc_enable_1 = 0x90db1000;
 	u32 val_frcc_reg10 = 0x29101f;
 	u32 val_eco_reserved_ctrl = 0x0000080c;
 	u32 val_frc_ds_ctrl = 0x000a019e;
+	u32 val_frcc_mvc = 0x00000058;
 
 	u16 fmif_vd_hstride,  fmif_mv_hstride;
 	u32 fmif_vd_offset, fmif_mv_frm_offset;
@@ -200,7 +202,11 @@ void iris_frc_mif_reg_set(void)
 	u32 mvc_gen_cnt_thr, rgme_calc_cnt_thr, fi_meta_fast_entry_thr;
 	u32 fmif_rgme_hstride, fmif_rgme_frm_offset;
 	u32 memc_level = 3;
-	int mode;
+
+	enableGameMode = (pcfg->memc_info.memc_mode == MEMC_DUAL_VIDEO_ENABLE);
+	enableGameMode &= (pcfg->memc_info.low_latency_mode == ULTRA_LT_MODE);
+	enableGameMode |= (pcfg->memc_info.memc_mode == MEMC_SINGLE_GAME_ENABLE);
+	enableGameMode |= (pcfg->memc_info.memc_mode == MEMC_DUAL_GAME_ENABLE);
 
 	fmif_vd_hstride = iris_frc_video_hstride_calc(frc_setting->mv_hres, frc_setting->mv_coef, 1);
 	fmif_vd_offset = fmif_vd_hstride * frc_setting->mv_vres * 8;
@@ -248,6 +254,16 @@ void iris_frc_mif_reg_set(void)
 	if (pcfg->rx_mode == DSI_OP_CMD_MODE && pcfg->tx_mode == DSI_OP_VIDEO_MODE)
 		val_frcc_enable_0 &= ~0x2;	// disable FMD
 
+	if (pcfg->memc_info.panel_fps == 120) {
+		val_frcc_fk_ctrl_3 = 0x1e1f0218;
+		val_frcc_fk_ctrl_4 = 0x800033d6;
+		val_frcc_fk_ctrl_5 = 0x0028d3d4;
+	} else if (pcfg->memc_info.panel_fps == 90) {
+		val_frcc_fk_ctrl_3 = 0x282a0218;
+		val_frcc_fk_ctrl_4 = 0x800033de;
+		val_frcc_fk_ctrl_5 = 0x0035151a;
+	}
+
 	if (iris_low_latency_mode_get() == ULTRA_LT_MODE) {
 		/* two buffer mode, disable REP_FRM_DET_EN and MVC_PPC_EN */
 		if (!iris_three_buffer_low_latency)
@@ -255,6 +271,7 @@ void iris_frc_mif_reg_set(void)
 		val_frcc_reg1 = 0x00280000;
 		val_frcc_phase_ctrl_0 = 0x042dfc04;
 		val_frcc_phase_ctrl_1 = 0x00511919;
+		val_frcc_fk_ctrl_4 = (val_frcc_fk_ctrl_4 & (~0x0003c000)) | (4 << 14);
 	} else if ((iris_low_latency_mode_get() == LT_MODE) ||
 			(iris_low_latency_mode_get() == NORMAL_LT)) {
 		val_frcc_enable_0 |= ((pcfg->frc_setting.layer_c_en << 9) |
@@ -296,6 +313,10 @@ void iris_frc_mif_reg_set(void)
 		(pcfg->memc_info.n2m_mode == 1 || pcfg->memc_info.n2m_mode == 2)) {
 		val_frcc_enable_1 = (val_frcc_enable_1 & (~0x00002000)) | (1 << 13);
 	}
+
+	if (pcfg->memc_info.memc_level == 1)
+		val_frcc_enable_1 |= (1 << 14);
+
 	iris_frc_reg_add(IRIS_FRC_MIF_ADDR + FRCC_ENABLE_1, val_frcc_enable_1 | (iris_tnr_mode_get() << 3), 0);
 
 	iris_frc_reg_add(IRIS_FRC_MIF_ADDR + FRCC_CTRL_REG2, val_frcc_reg2, 0);
@@ -304,38 +325,35 @@ void iris_frc_mif_reg_set(void)
 		val_frcc_reg3 = (val_frcc_reg3 & 0x0fffffff) | ((iris_fi_drop_frm_thr & 0xf) << 28);
 	else
 		val_frcc_reg3 = val_frcc_reg3 & 0x0fffffff;
+
+	if (pcfg->memc_info.memc_level == 1) {
+		val_frcc_reg4 &= ~0x1ff000;
+		val_frcc_reg4 |= (judder_angle << 12);
+	}
 	iris_frc_reg_add(IRIS_FRC_MIF_ADDR + FRCC_CTRL_REG3, val_frcc_reg3, 0);
 	iris_frc_reg_add(IRIS_FRC_MIF_ADDR + FRCC_CTRL_REG4, val_frcc_reg4, 0);
 	iris_frc_reg_add(IRIS_FRC_MIF_ADDR + FRCC_CTRL_REG6, val_frcc_reg6, 0);
 	iris_frc_reg_add(IRIS_FRC_MIF_ADDR + FRCC_FK_CTRL_3, val_frcc_fk_ctrl_3, 0);
 	iris_frc_reg_add(IRIS_FRC_MIF_ADDR + FRCC_FK_CTRL_4,
 					val_frcc_fk_ctrl_4 | (memc_level << 6), 0);
+	iris_frc_reg_add(IRIS_FRC_MIF_ADDR + FRCC_FK_CTRL_5, val_frcc_fk_ctrl_5, 0);
 	if ((frc_setting->mv_hres > 96) && (frc_setting->mv_vres > 384))
 		val_frcc_reg10 &= (~0x00000010);
 	iris_frc_reg_add(IRIS_FRC_MIF_ADDR + FRCC_CTRL_REG10, val_frcc_reg10, 0);
 
-	mode = iris_low_latency_mode_get();
-	switch(mode) {
-		case LT_MODE:
-		case NORMAL_LT:
-			iris_frc_reg_add(IRIS_FRC_MIF_ADDR + FRCC_MVC_CTRL_0, 0x00000008, 0);
-			break;
-
-		case ULTRA_LT_MODE:
-			iris_frc_reg_add(IRIS_FRC_MIF_ADDR + FRCC_MVC_CTRL_0, 0x000000d8, 0);
-			break;
-
-		default:
-			IRIS_LOGE("Invalid low latency mode %d", mode);
-			break;
-	}
+	if (iris_low_latency_mode_get() == NORMAL_LT || iris_low_latency_mode_get() == LT_MODE)
+		iris_frc_reg_add(IRIS_FRC_MIF_ADDR + FRCC_MVC_CTRL_0, 0x8, 0);
+	else if (iris_low_latency_mode_get() == ULTRA_LT_MODE)
+		iris_frc_reg_add(IRIS_FRC_MIF_ADDR + FRCC_MVC_CTRL_0, 0xd8, 0);
+	else
+		iris_frc_reg_add(IRIS_FRC_MIF_ADDR + FRCC_MVC_CTRL_0, val_frcc_mvc, 0);
 
 	iris_frc_reg_add(IRIS_FRC_MIF_ADDR + FRCC_MVF_CTRL_0, (frc_setting->force_repeat << 1), 0);
 
 	if (pcfg->rx_mode == DSI_OP_VIDEO_MODE && pcfg->tx_mode == DSI_OP_VIDEO_MODE)
 		val_eco_reserved_ctrl = val_eco_reserved_ctrl | 0x000000d0;
 	if (iris_low_latency_mode_get() == ULTRA_LT_MODE) {
-		if (debug_eco_overwrite == 1 && pcfg->memc_info.memc_mode == MEMC_SINGLE_GAME_ENABLE)
+		if (debug_eco_overwrite == 1 && enableGameMode)
 			val_eco_reserved_ctrl = val_eco_reserved_ctrl | 0x00000610;
 		else
 			val_eco_reserved_ctrl = val_eco_reserved_ctrl | 0x00000600;
@@ -451,6 +469,12 @@ void iris_gmd_reg_set(void)
 	iris_frc_reg_add(IRIS_GMD_ADDR + GMD_START, 0x00000000, 0);
 	iris_frc_reg_add(IRIS_GMD_ADDR + GMD_STOP,
 		frc_setting->mv_hres + (frc_setting->mv_vres << 16), 0);
+	/* it is only aimed at Genshin Impact */
+	if (pcfg->memc_info.memc_mode == MEMC_SINGLE_GAME_ENABLE && pcfg->memc_info.memc_app == 3) {
+		iris_frc_reg_add(IRIS_GMD_ADDR + GMD_START_WIN, 0x00320000, 0);
+		iris_frc_reg_add(IRIS_GMD_ADDR + GMD_STOP_WIN, 0x056e0280, 0);
+		iris_frc_reg_add(IRIS_GMD_ADDR + GMD_SUM_SEL, 0x00000001, 0);
+	}
 	iris_frc_reg_add(IRIS_GMD_ADDR + GMD_CTRL, 0x00000001, 0);
 }
 
@@ -493,130 +517,90 @@ void iris_cad_reg_set(void)
 
 }
 
+void iris_game_memc_registers_set(void)
+{
+	struct iris_cfg *pcfg = iris_get_cfg();
+	u32 i;
+
+	i = 0;
+	while (pcfg->memc_info.latencyValue[i]) {
+		iris_frc_reg_add(pcfg->memc_info.latencyValue[i], pcfg->memc_info.latencyValue[i+1], 0);
+		i += 2;
+	}
+}
+
+void iris_game_memc_OSD_registers_set(void)
+{
+	struct iris_cfg *pcfg = iris_get_cfg();
+	u32 i;
+
+	i = 0;
+	while (pcfg->memc_info.OSDProtection[i]) {
+		iris_frc_reg_add(pcfg->memc_info.OSDProtection[i], pcfg->memc_info.OSDProtection[i+1], 0);
+		i += 2;
+	}
+}
+
 void iris_mvc_reg_set(void)
 {
-	int mode = iris_low_latency_mode_get();
+	int mode = 0;
 
-	switch(mode) {
-		case NORMAL_LT:
-		case LT_MODE:
-			iris_frc_reg_add(IRIS_MVC_ADDR + MVC_OSDWIN_0,   0x21000e18, 0);
-			iris_frc_reg_add(IRIS_MVC_ADDR + MVC_OSDWIN_1,   0x81024e18, 0);
-			iris_frc_reg_add(IRIS_MVC_ADDR + MVC_OSDWIN_2,   0x80300018, 0);
-			iris_frc_reg_add(IRIS_MVC_ADDR + MVC_TEXTFLAG_0, 0x44440440, 0);
-			iris_frc_reg_add(IRIS_MVC_ADDR + MVC_REGIONMV_2, 0x04440800, 0);
-			iris_frc_reg_add(IRIS_MVC_ADDR + MVC_SAD_2,      0x18ffffff, 0);
-			break;
-
-		case ULTRA_LT_MODE:
-			iris_frc_reg_add(IRIS_MVC_ADDR + MVC_OSDWIN_0,   0x21000e1b, 0);
-			iris_frc_reg_add(IRIS_MVC_ADDR + MVC_OSDWIN_1,   0x81024e1b, 0);
-			iris_frc_reg_add(IRIS_MVC_ADDR + MVC_OSDWIN_2,   0x80300019, 0);
-			iris_frc_reg_add(IRIS_MVC_ADDR + MVC_TEXTFLAG_0, 0x44440448, 0);
-			iris_frc_reg_add(IRIS_MVC_ADDR + MVC_REGIONMV_2, 0x04440880, 0);
-			iris_frc_reg_add(IRIS_MVC_ADDR + MVC_SAD_2,      0x18a8ffff, 0);
-			break;
-
-		default:
-			IRIS_LOGE("Invalid low latency mode %d", mode);
-			break;
-	}
-	iris_frc_reg_add(IRIS_MVC_ADDR + MVC_SW_UPDATE,  0x00000001, 0);
-
-	mode = iris_osd_protect_mode_get();
-
-	switch(mode) {
-		case OSD_PROTECT_GAMEOFPEACE:
-			iris_frc_reg_add(IRIS_MVC_ADDR + MVC_POSTFILT_0, 0x67b444c1, 0);
-                        iris_frc_reg_add(IRIS_MVC_ADDR + MVC_KFBOSD_0,   0x12429f43, 0);
-                        iris_frc_reg_add(IRIS_MVC_ADDR + MVC_KFBOSD_1,   0x0a180a18, 0);
-			break;
-
-		case OSD_PROTECT_PERFECTWORLD:
-			iris_frc_reg_add(IRIS_MVC_ADDR + MVC_POSTFILT_0, 0x67b444c1, 0);
-                        iris_frc_reg_add(IRIS_MVC_ADDR + MVC_KFBOSD_0,   0x12429f43, 0);
-                        iris_frc_reg_add(IRIS_MVC_ADDR + MVC_KFBOSD_1,   0x0a18089e, 0);
-                        break;
-
-		case OSD_PROTECT_DISABLE:
-			iris_frc_reg_add(IRIS_MVC_ADDR + MVC_POSTFILT_0, 0x67b44441, 0);
-                        iris_frc_reg_add(IRIS_MVC_ADDR + MVC_KFBOSD_0,   0x12429f42, 0);
-                        iris_frc_reg_add(IRIS_MVC_ADDR + MVC_KFBOSD_1,   0x0a180a18, 0);
-                        break;
-
-		case OSD_PROTECT_DEFAULT:
-			iris_frc_reg_add(IRIS_MVC_ADDR + MVC_POSTFILT_0, 0x67b444c1, 0);
-			iris_frc_reg_add(IRIS_MVC_ADDR + MVC_KFBOSD_0,   0x12429f43, 0);
-			iris_frc_reg_add(IRIS_MVC_ADDR + MVC_KFBOSD_1,   0x10001000, 0);
-			break;
-
-		default:
-			IRIS_LOGE("Invalid osd protect mode %d", mode);
-			break;
+	mode = iris_low_latency_mode_get();
+	if (mode == NORMAL_LT || mode == LT_MODE) {
+		iris_frc_reg_add(IRIS_MVC_ADDR + MVC_POSTFILT_0, 0x67b444c1, 0);
+		iris_frc_reg_add(IRIS_MVC_ADDR + MVC_KFBOSD_0, 0x12429f43, 0);
+		iris_frc_reg_add(IRIS_MVC_ADDR + MVC_KFBOSD_1, 0x10001000, 0);
+		iris_frc_reg_add(IRIS_MVC_ADDR + MVC_OSDWIN_0, 0x21000e18, 0);
+		iris_frc_reg_add(IRIS_MVC_ADDR + MVC_OSDWIN_1, 0x81024e18, 0);
+		iris_frc_reg_add(IRIS_MVC_ADDR + MVC_OSDWIN_2, 0x80300018, 0);
+		iris_frc_reg_add(IRIS_MVC_ADDR + MVC_TEXTFLAG_0, 0x44440440, 0);
+		iris_frc_reg_add(IRIS_MVC_ADDR + MVC_REGIONMV_2, 0x4440800, 0);
+		iris_frc_reg_add(IRIS_MVC_ADDR + MVC_SAD_2, 0x18ffffff, 0);
+		iris_frc_reg_add(IRIS_MVC_ADDR + MVC_SW_UPDATE, 0x00000001, 0);
+	} else if (mode == ULTRA_LT_MODE) {
+		iris_frc_reg_add(IRIS_MVC_ADDR + MVC_POSTFILT_0, 0x67b444c1, 0);
+		iris_frc_reg_add(IRIS_MVC_ADDR + MVC_KFBOSD_0, 0x12429f43, 0);
+		iris_frc_reg_add(IRIS_MVC_ADDR + MVC_KFBOSD_1, 0x10001000, 0);
+		iris_frc_reg_add(IRIS_MVC_ADDR + MVC_OSDWIN_0, 0x21000e1b, 0);
+		iris_frc_reg_add(IRIS_MVC_ADDR + MVC_OSDWIN_1, 0x81024e1b, 0);
+		iris_frc_reg_add(IRIS_MVC_ADDR + MVC_OSDWIN_2, 0x80300019, 0);
+		iris_frc_reg_add(IRIS_MVC_ADDR + MVC_TEXTFLAG_0, 0x44440448, 0);
+		iris_frc_reg_add(IRIS_MVC_ADDR + MVC_REGIONMV_2, 0x4440880, 0);
+		iris_frc_reg_add(IRIS_MVC_ADDR + MVC_SAD_2, 0x18a8ffff, 0);
+		iris_frc_reg_add(IRIS_MVC_ADDR + MVC_SW_UPDATE, 0x00000001, 0);
 	}
 }
 
 void iris_mvf_reg_set(void)
 {
-	int mode = iris_low_latency_mode_get();
+	int mode = 0;
 
-	switch(mode) {
-		case LT_MODE:
-		case NORMAL_LT:
-			iris_frc_reg_add(IRIS_MVF_ADDR + MVF_SMI_CTRL, 0x64, 0);
-			iris_frc_reg_add(IRIS_MVF_ADDR + MVF_VERTIRANGE_CFG, 0x18c, 0);
-			iris_frc_reg_add(IRIS_MVF_ADDR + MVF_CAND_CFG, 0x1f10882c, 0);
-			iris_frc_reg_add(IRIS_MVF_ADDR + HR_MVC_CFG1,   0x00008124, 0);
-			iris_frc_reg_add(IRIS_MVF_ADDR + HR_MVC_CFG2,   0x00090f27, 0);
-			iris_frc_reg_add(IRIS_MVF_ADDR + MVF_OSDMV,     0x0428c8d2, 0);
-			iris_frc_reg_add(IRIS_MVF_ADDR + MVF_OSDMV2,    0x700013f2, 0);
-			iris_frc_reg_add(IRIS_MVF_ADDR + MVF_HMTNFB,    0x00008818, 0);
-			break;
-
-		case ULTRA_LT_MODE:
-			iris_frc_reg_add(IRIS_MVF_ADDR + MVF_SMI_CTRL, 0x64, 0);
-			iris_frc_reg_add(IRIS_MVF_ADDR + MVF_VERTIRANGE_CFG, 0x18c, 0);
-			iris_frc_reg_add(IRIS_MVF_ADDR + MVF_CAND_CFG, 0x1f10882c, 0);
-			iris_frc_reg_add(IRIS_MVF_ADDR + HR_MVC_CFG1,   0x00008224, 0);
-			iris_frc_reg_add(IRIS_MVF_ADDR + HR_MVC_CFG2,   0x00090524, 0);
-			iris_frc_reg_add(IRIS_MVF_ADDR + MVF_OSDMV,     0x0488c8d2, 0);
-			iris_frc_reg_add(IRIS_MVF_ADDR + MVF_OSDMV2,    0x70001102, 0);
-			iris_frc_reg_add(IRIS_MVF_ADDR + MVF_HMTNFB,    0x00148818, 0);
-			break;
-
-		default:
-			IRIS_LOGE("Invalid low latency mode %d", mode);
-			break;
+	mode = iris_low_latency_mode_get();
+	if (mode == NORMAL_LT || mode == LT_MODE) {
+		iris_frc_reg_add(IRIS_MVF_ADDR + MVF_SMI_CTRL, 0x64, 0);
+		iris_frc_reg_add(IRIS_MVF_ADDR + MVF_VERTIRANGE_CFG, 0x18c, 0);
+		iris_frc_reg_add(IRIS_MVF_ADDR + MVF_CAND_CFG, 0x1f10882c, 0);
+		iris_frc_reg_add(IRIS_MVF_ADDR + HR_MVC_CFG1, 0x8124, 0);
+		iris_frc_reg_add(IRIS_MVF_ADDR + HR_MVC_CFG2, 0x90f27, 0);
+		iris_frc_reg_add(IRIS_MVF_ADDR + MVF_MISC_CFG3, 0x2449, 0);
+		iris_frc_reg_add(IRIS_MVF_ADDR + MVF_OSDMV, 0x428c8d2, 0);
+		iris_frc_reg_add(IRIS_MVF_ADDR + MVF_OSDMV2, 0x700013f2, 0);
+		iris_frc_reg_add(IRIS_MVF_ADDR + MVF_OSDMV3, 0x44444093, 0);
+		iris_frc_reg_add(IRIS_MVF_ADDR + MVF_HMTNFB, 0x8818, 0);
+		iris_frc_reg_add(IRIS_MVF_ADDR + MVF_SHDW_CTRL, 0x00000013, 0);
+	} else if (mode == ULTRA_LT_MODE) {
+		iris_frc_reg_add(IRIS_MVF_ADDR + MVF_SMI_CTRL, 0x64, 0);
+		iris_frc_reg_add(IRIS_MVF_ADDR + MVF_VERTIRANGE_CFG, 0x18c, 0);
+		iris_frc_reg_add(IRIS_MVF_ADDR + MVF_CAND_CFG, 0x1f10882c, 0);
+		iris_frc_reg_add(IRIS_MVF_ADDR + HR_MVC_CFG1, 0x8224, 0);
+		iris_frc_reg_add(IRIS_MVF_ADDR + HR_MVC_CFG2, 0x90524, 0);
+		iris_frc_reg_add(IRIS_MVF_ADDR + MVF_MISC_CFG3, 0x2449, 0);
+		iris_frc_reg_add(IRIS_MVF_ADDR + MVF_OSDMV, 0x488c8d2, 0);
+		iris_frc_reg_add(IRIS_MVF_ADDR + MVF_OSDMV2, 0x70001102, 0);
+		iris_frc_reg_add(IRIS_MVF_ADDR + MVF_OSDMV3, 0x44444093, 0);
+		iris_frc_reg_add(IRIS_MVF_ADDR + MVF_HMTNFB, 0x148818, 0);
+		iris_frc_reg_add(IRIS_MVF_ADDR + MVF_SHDW_CTRL, 0x00000013, 0);
 	}
-
-	mode = iris_osd_protect_mode_get();
-	switch(mode) {
-		case OSD_PROTECT_GAMEOFPEACE:
-			iris_frc_reg_add(IRIS_MVF_ADDR + MVF_MISC_CFG3, 0x00002449, 0);
-			iris_frc_reg_add(IRIS_MVF_ADDR + MVF_OSDMV3,    0x44444093, 0);
-			break;
-
-		case OSD_PROTECT_PERFECTWORLD:
-			iris_frc_reg_add(IRIS_MVF_ADDR + MVF_MISC_CFG3, 0x00002449, 0);
-			iris_frc_reg_add(IRIS_MVF_ADDR + MVF_OSDMV3,    0x44444093, 0);
-			break;
-
-		case OSD_PROTECT_DISABLE:
-			iris_frc_reg_add(IRIS_MVF_ADDR + MVF_MISC_CFG3, 0x00002448, 0);
-			iris_frc_reg_add(IRIS_MVF_ADDR + MVF_OSDMV3,    0x44444083, 0);
-			break;
-
-		case OSD_PROTECT_DEFAULT:
-			iris_frc_reg_add(IRIS_MVF_ADDR + MVF_MISC_CFG3, 0x00002449, 0);
-			iris_frc_reg_add(IRIS_MVF_ADDR + MVF_OSDMV3,    0x44444093, 0);
-			break;
-
-		default:
-			IRIS_LOGE("Invalid osd protect mode %d", mode);
-			break;
-	}
-
-	iris_frc_reg_add(IRIS_MVF_ADDR + MVF_SHDW_CTRL, 0x00000013, 0);
 }
 
 /* control mvc dsy buffer mode and buffer size */
@@ -666,6 +650,9 @@ u32 iris_fi_demo_win_color_get(void)
 	case MEMC_DUAL_VIDEO_ENABLE:
 		val = 0x902235;  /* green */
 		break;
+	case MEMC_DUAL_GAME_ENABLE:
+		val = 0xceddca;  /* magenta */
+		break;
 	case MEMC_SINGLE_GAME_ENABLE:
 		val = 0xd29210;  /* yellow */
 		break;
@@ -687,7 +674,6 @@ void iris_fi_reg_set(void)
 	u32 vrange_top, vrange_bot;
 	u32 hres = (frc_setting->mv_hres / 4) * 4;
 	u32 demo_win_yuv = 0x51ef5a;
-	int mode;
 
 	if (frc_setting->mv_hres % 4)
 		hres += 4;
@@ -748,53 +734,22 @@ void iris_fi_reg_set(void)
 		iris_frc_reg_add(IRIS_FI_ADDR + FI_ECO_CTRL, 0x00000000, 0);
 	}
 
-	mode = iris_low_latency_mode_get();
-	switch(mode) {
-		case NORMAL_LT:
-		case LT_MODE:
-			iris_frc_reg_add(IRIS_FI_ADDR + FI_BLENDING_CTRL1, 0x4445555f, 0);
-			break;
-
-		case ULTRA_LT_MODE:
-			iris_frc_reg_add(IRIS_FI_ADDR + FI_BLENDING_CTRL1, 0x4455555f, 0);
-			break;
-
-		default:
-			IRIS_LOGE("Invalid low latency mode %d", mode);
-			break;
+	if (iris_low_latency_mode_get()) {
+		iris_frc_reg_add(IRIS_FI_ADDR + FI_OSD_WINDOW_CTRL, 0x0, 0);
+		iris_frc_reg_add(IRIS_FI_ADDR + FI_OSD0_BR, 0x2d50145, 0);
+		iris_frc_reg_add(IRIS_FI_ADDR + FI_OSD0_TL, 0x2cb013b, 0);
 	}
 
-	mode = iris_osd_protect_mode_get();
-	switch(mode) {
-		case OSD_PROTECT_GAMEOFPEACE:
-			iris_frc_reg_add(IRIS_FI_ADDR + FI_OSD_WINDOW_CTRL, 0x00000001, 0);
-			break;
-
-		case OSD_PROTECT_PERFECTWORLD:
-			iris_frc_reg_add(IRIS_FI_ADDR + FI_OSD_WINDOW_CTRL, 0x00000000, 0);
-			break;
-
-		case OSD_PROTECT_DISABLE:
-			iris_frc_reg_add(IRIS_FI_ADDR + FI_OSD_WINDOW_CTRL, 0x00000000, 0);
-			break;
-
-		case OSD_PROTECT_DEFAULT:
-			iris_frc_reg_add(IRIS_FI_ADDR + FI_OSD_WINDOW_CTRL, 0x00000000, 0);
-			break;
-
-		default:
-			IRIS_LOGE("Invalid osd protect mode %d", mode);
-			break;
-	}
-	iris_frc_reg_add(IRIS_FI_ADDR + FI_OSD0_BR, 0x02d50145, 0);
-	iris_frc_reg_add(IRIS_FI_ADDR + FI_OSD0_TL, 0x02cb013b, 0);
+	if (iris_low_latency_mode_get() == NORMAL_LT || iris_low_latency_mode_get() == LT_MODE)
+		iris_frc_reg_add(IRIS_FI_ADDR + FI_BLENDING_CTRL1, 0x4445555f, 0);
+	else if (iris_low_latency_mode_get() == ULTRA_LT_MODE)
+		iris_frc_reg_add(IRIS_FI_ADDR + FI_BLENDING_CTRL1, 0x4455555f, 0);
 
 	if (pcfg->memc_info.memc_mode != MEMC_DUAL_EXTMV_ENABLE) {
 		iris_frc_reg_add(IRIS_FI_ADDR + FI_BLENDING_CTRL3, 0x40000121, 0);
 		iris_frc_reg_add(IRIS_FI_ADDR + FI_BLENDING_CTRL4, 0x15008fff, 0);
 	}
 	iris_frc_reg_add(IRIS_FI_ADDR + FI_DEBUGBUS_MUX, 0x40000, 0);
-
 	iris_frc_reg_add(IRIS_FI_ADDR + FI_SHDW_CTRL, 0x00000100, 1);	// set last flag
 }
 
@@ -1097,6 +1052,8 @@ void iris_dtg_te_n2m_ctrl_setting_send(bool enable)
 			cmd[1] = 0;
 
 			payload = iris_get_ipopt_payload_data(IRIS_IP_DTG, ID_DTG_TE_SEL, 2);
+			if (!payload)
+				return;
 			pcfg->dtg_ctrl_pt = payload[0];
 
 			cmd[2] = IRIS_DTG_ADDR + DTG_CTRL;
@@ -1142,13 +1099,17 @@ void iris_hangup_timeout_cnt_update(bool enable)
 	struct iris_frc_setting *frc_setting = &pcfg->frc_setting;
 	u32 value = 0x01ffffff;
 
-	if((frc_setting->disp_hres == FHD_HRES) && (frc_setting->disp_vres == FHD_VRES)) {
-		value = 0x419CE000;
-	} else if ((frc_setting->disp_hres == QHD_HRES) && (frc_setting->disp_vres == QHD_VRES)) {
-		value = 0x56AB8000;
+	if (is_project(22811)) {
+		if((frc_setting->disp_hres == FHD_HRES) && (frc_setting->disp_vres == FHD_VRES)) {
+			value = 0x419CE000;
+		} else if ((frc_setting->disp_hres == QHD_HRES) && (frc_setting->disp_vres == QHD_VRES)) {
+			value = 0x56AB8000;
+		}
 	}
 
 	payload = iris_get_ipopt_payload_data(IRIS_IP_PWIL, 0xe2, 2);
+	if (!payload)
+		return;
 	cmd[0] = IRIS_PWIL_ADDR + PWIL_HANGUP_TIMEOUT_CNT;
 	if (enable)
 		cmd[1] = payload[0];
@@ -1221,57 +1182,6 @@ void iris_frc_timing_setting_update(void)
 	iris_hangup_timeout_cnt_update(false);
 }
 
-void iris_frc_osd_protect_setting_update(void)
-{
-	int mode;
-	struct iris_cfg *pcfg = iris_get_cfg();
-
-	switch(pcfg->memc_info.memc_app) {
-		case 0:
-		case 5:
-		case 13:
-		case 15:
-		case 19:
-		case 101:
-		case 113:
-			mode = OSD_PROTECT_GAMEOFPEACE;
-			break;
-
-		case 1:
-			mode = OSD_PROTECT_PERFECTWORLD;
-			break;
-
-		case 2:
-		case 3:
-		case 4:
-		case 6:
-		case 7:
-		case 8:
-		case 9:
-		case 10:
-		case 11:
-		case 12:
-		case 14:
-		case 16:
-		case 17:
-		case 20:
-		case 21:
-		case 22:
-		case 23:
-		case 24:
-		case 25:
-		case 102:
-			mode = OSD_PROTECT_DISABLE;
-			break;
-
-		default:
-			mode = OSD_PROTECT_DEFAULT;
-			break;
-	}
-
-	pcfg->osd_protect_mode = mode;
-}
-
 void iris_set_out_frame_rate(u32 fps)
 {
 	IRIS_LOGI("%s, set fps: %u", __func__, fps);
@@ -1287,11 +1197,15 @@ void iris_parse_mv_resolution(void)
 	struct iris_cfg *pcfg = iris_get_cfg();
 
 	payload = iris_get_ipopt_payload_data(IRIS_IP_PWIL, single_opt_id, 2);
+	if (!payload)
+		return;
 	pcfg->frc_setting.init_single_mv_hres = payload[5] & 0xffff;
 	pcfg->frc_setting.init_single_mv_vres = (payload[5] >> 16) & 0xffff;
 	pcfg->frc_setting.init_video_baseaddr = payload[7];
 
 	payload = iris_get_ipopt_payload_data(IRIS_IP_PWIL, dual_opt_id, 2);
+	if (!payload)
+		return;
 	pcfg->frc_setting.init_dual_mv_hres = payload[5] & 0xffff;
 	pcfg->frc_setting.init_dual_mv_vres = (payload[5] >> 16) & 0xffff;
 	pcfg->frc_setting.init_dual_video_baseaddr = payload[7];
@@ -1333,7 +1247,7 @@ void iris_frc_dsc_setting_update(u8 mode)
 	struct iris_cfg *pcfg = iris_get_cfg();
 	bool dual = false;
 
-	if (mode == MEMC_DUAL_VIDEO_ENABLE || mode == MEMC_DUAL_EXTMV_ENABLE)
+	if (mode == MEMC_DUAL_VIDEO_ENABLE || mode == MEMC_DUAL_EXTMV_ENABLE || mode == MEMC_DUAL_GAME_ENABLE)
 		dual = true;
 
 	payload = iris_get_ipopt_payload_data(IRIS_IP_PWIL, opt_id_0, 2);
@@ -1369,8 +1283,12 @@ void iris_vinvout_frc_exit(void)
 	u32 vinvout_frc_cmd[VINVOUT_CMD_SIZE];
 
 	payload = iris_get_ipopt_payload_data(IRIS_IP_DTG, 0xf3, 1);
+	if (!payload)
+		return;
 	memcpy(vinvout_frc_cmd, payload, (VINVOUT_CMD_SIZE - 2) * sizeof(u32));
 	payload = iris_get_ipopt_payload_data(IRIS_IP_DTG, 0x00, 2); //get dtg init packet
+	if (!payload)
+		return;
 	vinvout_frc_cmd[1] = payload[11];	//EVS_DLY
 	vinvout_frc_cmd[3] = payload[12];	//FRC_EVS_DLY
 	vinvout_frc_cmd[5] = payload[13];	//OVS_DLY_SWITCH
@@ -1476,7 +1394,8 @@ void iris_memc_mspwil_setting_update(void)
 				iris_frc_in2_width_get(),
 				pcfg->frc_setting.disp_vres,
 				pcfg->frc_setting.disp_hres,
-				pcfg->frc_setting.sr_sel);
+				pcfg->frc_setting.sr_sel,
+				true);
 
 		/* send sdr2hdr size2 to iris */
 		iris_sdr2hdr_update_size2(pcfg->frc_setting.mv_hres, pcfg->frc_setting.mv_vres);
@@ -1527,7 +1446,6 @@ void iris_memc_status_clear(bool init)
 
 		pcfg->mcu_code_downloaded = false;
 	}
-	pcfg->osd_protect_mode = -1;
 }
 
 void iris_memc_frc_phase_update(void)
@@ -1546,6 +1464,7 @@ void iris_memc_frc_phase_update(void)
 void iris_memc_info_update(void)
 {
 	struct iris_cfg *pcfg = iris_get_cfg();
+	bool enableGameMode = false;
 
 	/* if debug via 173 cmd, use default info */
 	if (pcfg->memc_info.memc_mode == MEMC_DISABLE) {
@@ -1558,7 +1477,7 @@ void iris_memc_info_update(void)
 			pcfg->memc_info.mv_hres = pcfg->frc_setting.init_single_mv_hres;
 			pcfg->memc_info.mv_vres = pcfg->frc_setting.init_single_mv_vres;
 		}
-		pcfg->memc_info.memc_level = 3;
+		pcfg->memc_info.memc_level = 0;
 		pcfg->memc_info.video_fps = 30;
 		pcfg->memc_info.panel_fps = pcfg->panel_te;
 	}
@@ -1571,16 +1490,24 @@ void iris_memc_info_update(void)
 		pcfg->memc_info.vfr_en = debug_frc_vfr_overwrite & 0x0f;
 	if (debug_n2m_mode_overwrite & 0x80)
 		pcfg->memc_info.n2m_mode = debug_n2m_mode_overwrite & 0x0f;
+	if ((pcfg->memc_info.memc_mode == MEMC_SINGLE_GAME_ENABLE) && (pcfg->panel_te > 130)) {
+		pcfg->memc_info.mv_hres = mv_res_overwrite & 0xffff;
+		pcfg->memc_info.mv_vres = (mv_res_overwrite >> 16) & 0x7fff;
+	}
 
 	if (debug_mv_res_overwrite & 0x80000000) {
 		pcfg->memc_info.mv_hres = debug_mv_res_overwrite & 0xffff;
 		pcfg->memc_info.mv_vres = (debug_mv_res_overwrite >> 16) & 0x7fff;
 	}
 
+	enableGameMode = (pcfg->memc_info.memc_mode == MEMC_DUAL_VIDEO_ENABLE);
+	enableGameMode &= (pcfg->memc_info.low_latency_mode == ULTRA_LT_MODE);
+	enableGameMode |= (pcfg->memc_info.memc_mode == MEMC_SINGLE_GAME_ENABLE);
+	enableGameMode |= (pcfg->memc_info.memc_mode == MEMC_DUAL_GAME_ENABLE);
+
 	//when tx output mode is video mode, disable vfr function.
 	if (pcfg->tx_mode == DSI_OP_VIDEO_MODE ||
-		pcfg->memc_info.memc_mode == MEMC_DUAL_EXTMV_ENABLE ||
-		pcfg->memc_info.memc_mode == MEMC_SINGLE_GAME_ENABLE)
+		pcfg->memc_info.memc_mode == MEMC_DUAL_EXTMV_ENABLE || enableGameMode)
 		pcfg->memc_info.vfr_en = 0;
 
 	if (pcfg->tx_mode == DSI_OP_VIDEO_MODE ||
@@ -1590,11 +1517,12 @@ void iris_memc_info_update(void)
 	if (pcfg->tx_mode == DSI_OP_VIDEO_MODE ||
 		pcfg->memc_info.low_latency_mode >= LT_INVALID ||
 		(pcfg->memc_info.memc_mode != MEMC_SINGLE_VIDEO_ENABLE &&
-		pcfg->memc_info.memc_mode != MEMC_SINGLE_GAME_ENABLE))
+		(!enableGameMode)))
 		pcfg->memc_info.low_latency_mode = 0;
 
 	if (pcfg->memc_info.memc_mode == MEMC_DUAL_EXTMV_ENABLE ||
-		pcfg->memc_info.memc_mode == MEMC_DUAL_VIDEO_ENABLE)
+		pcfg->memc_info.memc_mode == MEMC_DUAL_VIDEO_ENABLE ||
+		pcfg->memc_info.memc_mode == MEMC_DUAL_GAME_ENABLE)
 		pcfg->memc_info.n2m_mode = 0;
 
 	IRIS_LOGI("memc info: mode-%d, mv-%dx%d, level-%d, ratio-%d-%d, vfr-%d, tnr-%d, lt-%d, n2m-%d, osdwin-%d",
@@ -1609,6 +1537,12 @@ void iris_frc_setting_update(void)
 {
 	struct iris_cfg *pcfg = iris_get_cfg();
 	struct iris_frc_setting *frc_setting = &pcfg->frc_setting;
+	bool enableGameMode = false;
+
+	enableGameMode = (pcfg->memc_info.memc_mode == MEMC_DUAL_VIDEO_ENABLE);
+	enableGameMode &= (pcfg->memc_info.low_latency_mode == ULTRA_LT_MODE);
+	enableGameMode |= (pcfg->memc_info.memc_mode == MEMC_SINGLE_GAME_ENABLE);
+	enableGameMode |= (pcfg->memc_info.memc_mode == MEMC_DUAL_GAME_ENABLE);
 
 	if (pcfg->memc_info.memc_mode == MEMC_DUAL_EXTMV_ENABLE) {
 		frc_setting->mv_hres = pcfg->emv_info.gameWidth;
@@ -1640,7 +1574,7 @@ void iris_frc_setting_update(void)
 	}
 	pcfg->iris_frc_vfr_st = frc_setting->frc_vfr_disp;
 
-	if (debug_disable_frc_dynen || pcfg->memc_info.memc_mode == MEMC_SINGLE_GAME_ENABLE)
+	if (debug_disable_frc_dynen || enableGameMode)
 		frc_setting->frc_dynen = false;
 	else
 		frc_setting->frc_dynen = true;
@@ -1658,8 +1592,6 @@ void iris_frc_setting_update(void)
 
 	iris_frc_timing_setting_update();
 	iris_frc_dsc_setting_update(pcfg->memc_info.memc_mode);
-
-	iris_frc_osd_protect_setting_update();
 
 	IRIS_LOGI("frc setting: disp-%dx%d@%d, mv-%dx%d coef-%d, buf-%d@%x pps-%d sr_sel-%d frc_vfr:%d dsc-%x/%x",
 		frc_setting->disp_hres, frc_setting->disp_vres, pcfg->panel_te,
@@ -1731,7 +1663,6 @@ void iris_mcu_state_set(u32 mode)
 		else
 			IRIS_LOGI("iris mcu not in stop, can't reset mcu");
 	}
-
 	iris_mcu_mode = mode;
 }
 
@@ -1754,6 +1685,8 @@ void iris_pwil_reg_set(void)
 
 	/* frc ctrl */
 	payload = iris_get_ipopt_payload_data(IRIS_IP_PWIL, 0x70, 2);
+	if (!payload)
+		return;
 	payload[0] &= (~0x00000001);
 	payload[0] |= pcfg->memc_info.vfr_en;
 	payload[1] &= (~0x00073f10);
@@ -1766,6 +1699,8 @@ void iris_pwil_reg_set(void)
 	/* video ctrl */
 	hstride = iris_frc_video_hstride_calc(frc_setting->mv_hres, frc_setting->mv_coef, 1);
 	payload = iris_get_ipopt_payload_data(IRIS_IP_PWIL, 0xB0, 2);
+	if (!payload)
+		return;
 	payload[5] = (frc_setting->mv_vres << 16) | frc_setting->mv_hres;
 	payload[6] = hstride;
 	payload[7] = frc_setting->video_baseaddr;
@@ -1773,6 +1708,8 @@ void iris_pwil_reg_set(void)
 
 	/* pwil ctrl */
 	payload = iris_get_ipopt_payload_data(IRIS_IP_PWIL, 0xf0, 2);
+	if (!payload)
+		return;
 	payload[2] &= (~0x0000c000);
 	if (!iris_tnr_mode_get())
 		payload[2] |= (1 << 14);
@@ -1793,7 +1730,14 @@ void iris_pwil_reg_set(void)
 void iris_memc_ctrl_frc_prepare(void)
 {
 	struct iris_cfg *pcfg = iris_get_cfg();
+	bool enableGameMode = false;
 
+	enableGameMode = (pcfg->memc_info.memc_mode == MEMC_DUAL_VIDEO_ENABLE);
+	enableGameMode &= (pcfg->memc_info.low_latency_mode == ULTRA_LT_MODE);
+	enableGameMode |= pcfg->memc_info.memc_mode == MEMC_SINGLE_GAME_ENABLE;
+	enableGameMode |= pcfg->memc_info.memc_mode == MEMC_DUAL_GAME_ENABLE;
+
+	pcfg->pt_sr_enable_restore = pcfg->pt_sr_enable;
 	iris_pt_sr_reset();
 	iris_memc_info_update();
 	iris_frc_setting_update();
@@ -1807,6 +1751,7 @@ void iris_memc_ctrl_frc_prepare(void)
 		iris_linelock_set(false, true);
 
 	iris_dtg_ovs_dly_setting_send(true);
+	iris_pwil_idle_mask_update(true);
 	iris_hangup_timeout_cnt_update(true);
 	if (pcfg->memc_info.n2m_mode == 1 || pcfg->memc_info.n2m_mode == 2)
 		iris_dtg_te_n2m_ctrl_setting_send(true);
@@ -1821,7 +1766,7 @@ void iris_memc_ctrl_frc_prepare(void)
 
 	/* power domain on */
 	//iris_pmu_frc_set(true);
-	if (pcfg->memc_info.memc_mode == MEMC_SINGLE_GAME_ENABLE || pcfg->memc_info.memc_mode == MEMC_DUAL_EXTMV_ENABLE)
+	if (enableGameMode || pcfg->memc_info.memc_mode == MEMC_DUAL_EXTMV_ENABLE)
 		iris_sr_level_set(FRC_MODE, pcfg->frcgame_pq_guided_level,
 			pcfg->frcgame_pq_dejaggy_level,
 			pcfg->frcgame_pq_peaking_level,
@@ -1862,6 +1807,9 @@ void iris_memc_ctrl_frc_prepare(void)
 	iris_mvf_reg_set();
 	/* FI */
 	iris_fi_reg_set();
+	/* DEBUG REGISTERS SETTING */
+	iris_game_memc_registers_set();
+	iris_game_memc_OSD_registers_set();
 
 	/* FRC LUT */
 	iris_memc_frc_phase_update();
@@ -1901,6 +1849,8 @@ void iris_memc_ctrl_pt_frc_grcp_set(bool frc_enable)
 		meta |= 0x10;
 
 	payload = iris_get_ipopt_payload_data(IRIS_IP_BLEND, 0x20, 2);
+	if (!payload)
+		return;
 
 	cmd[0] = IRIS_RX0_ADDR + RX0_VDO_META;
 	cmd[1] = meta;
@@ -1935,11 +1885,13 @@ void iris_memc_ctrl_pt_post(void)
 	}
 
 	/* power domain off */
-	if (!pcfg->pt_sr_enable)
+	if (!pcfg->pt_sr_enable_restore)
 		iris_pmu_frc_set(false);
 	iris_pmu_dscu_set(false);
 	if (!pcfg->dual_enabled)
 		iris_pmu_bsram_set(false);
+
+	iris_pwil_idle_mask_update(false);
 
 	/* enable flfp after exit frc */
 	if (!pcfg->dual_enabled)
@@ -1960,6 +1912,8 @@ void iris_memc_ctrl_pt_post(void)
 	iris_memc_cmd_payload_send();
 
 	iris_memc_status_clear(false);
+	if (!pcfg->dual_enabled)
+		iris_pt_sr_restore();
 }
 
 void iris_memc_ctrl_pt_to_frc(void)
@@ -2053,6 +2007,8 @@ void iris_dport_output_mode_reset(void)
 		mode = 1;
 
 	payload = iris_get_ipopt_payload_data(IRIS_IP_DPORT, 0xF0, 2);
+	if (!payload)
+		return;
 	dport_ctrl0 = payload[0];
 	dport_ctrl0 &= ~0xc000;
 	dport_ctrl0 |= (mode & 0x3) << 14;
@@ -2077,6 +2033,8 @@ void iris_dport_output_mode_select(bool enable)
 		mode = 1;
 
 	payload = iris_get_ipopt_payload_data(IRIS_IP_DPORT, 0xF0, 2);
+	if (!payload)
+		return;
 	dport_ctrl0 = payload[0];
 	dport_ctrl0 &= ~0xc000;
 	dport_ctrl0 |= (mode & 0x3) << 14;
@@ -2156,24 +2114,6 @@ void iris_memc_ctrl_cmd_proc(u32 cmd)
 	case MEMC_CTRL_VFR_DISABLE:
 		iris_memc_ctrl_vfr_disable();
 		IRIS_LOGI("MEMC_CTRL_VFR_DISABLE");
-		break;
-	case MEMC_CTRL_PANEL_TE_SWITCH:
-		if (iris_set_panel_vsync_switch_gpio(pcfg->panel, OPLUS_VSYNC_SWITCH_TE)) {
-			IRIS_LOGE("switch panel te failed");
-		}
-		break;
-	case MEMC_CTRL_PANEL_TP_VSYNC_SWITCH:
-		if (iris_set_panel_vsync_switch_gpio(pcfg->panel, OPLUS_VSYNC_SWITCH_TP)) {
-			IRIS_LOGE("switch TP Vsync failed");
-		}
-		break;
-	case MEMC_CTRL_PANEL_ADJUST_TP_SCANLINE:
-		iris_send_tsp_vsync_scanline_cmd(true);
-		IRIS_LOGI("MEMC_CTRL_PANEL_ADJUST_TP_SCANLINE");
-		break;
-	case MEMC_CTRL_PANEL_RESET_TP_SCANLINE:
-		iris_send_tsp_vsync_scanline_cmd(false);
-		IRIS_LOGI("MEMC_CTRL_PANEL_RESET_TP_SCANLINE");
 		break;
 	case MEMC_CTRL_SWITCH_TIMEOUT:
 		iris_switch_timeout_dump();
@@ -2294,6 +2234,10 @@ int iris_debug_memc_option_get(char *kbuf, int size)
 			"%d-%s: %x\n", index++, "memc_force_repeat", debug_frc_force_repeat);
 	len += snprintf(kbuf + len, size - len,
 			"%d-%s: %x\n", index++, "ocp_read_by_i2c", pcfg->ocp_read_by_i2c);
+	len += snprintf(kbuf + len, size - len,
+			"%d-%s: %x\n", index++, "memc_level_ow", debug_memc_level_overwrite);
+	len += snprintf(kbuf + len, size - len,
+			"%d-%s: %x\n", index++, "memc_judder_angle", judder_angle);
 	return len;
 }
 
@@ -2358,6 +2302,12 @@ void iris_debug_memc_option_set(u32 type, u32 value)
 	case 17:
 		pcfg->ocp_read_by_i2c = value;
 		break;
+	case 18:
+		debug_memc_level_overwrite = value;
+		break;
+	case 19:
+		judder_angle = value;
+		break;
 	default:
 		break;
 	}
@@ -2377,7 +2327,10 @@ int iris_dbgfs_memc_init(struct dsi_display *display)
 			return -ENODEV;
 		}
 	}
-
+	debugfs_create_u32("memc_level_ow", 0644, pcfg->dbg_root,
+		(u32 *)&debug_memc_level_overwrite);
+	debugfs_create_u32("memc_judder_angle", 0644, pcfg->dbg_root,
+		(u32 *)&judder_angle);
 	debugfs_create_u32("memc_disable_vfr_dual", 0644, pcfg->dbg_root,
 		(u32 *)&debug_disable_vfr_dual);
 	debugfs_create_u32("memc_vfr_enable_ow", 0644, pcfg->dbg_root,
@@ -2442,6 +2395,8 @@ static void frc_ioinc1d_config(int nInHeight, int nInWidth, int nOutWidth,
 	int h_offset = 9;
 	//ioinc1d downscaler switch
 	payload = iris_get_ipopt_payload_data(ip, 0xf0, 4);
+	if (!payload)
+		return;
 	IRIS_LOGI("%s, resolution information: [%d], [%d], [%d], [%d]", __func__,
 			nInWidth, nInHeight,
 			nOutWidth, nVSOutHeight);
@@ -2852,6 +2807,8 @@ void iris_frc_dsc_change(void)
 		chain = 1;
 	//pps table switch.
 	payload = iris_get_ipopt_payload_data(IRIS_IP_DSC_DEN_2, 0xf1, 5);
+	if (!payload)
+		return;
 	for (i = 0; i < 11; i++) {
 		if ((iris_frc_dec_initial_delay != 0) && (i == 4))
 			continue;
@@ -2863,6 +2820,8 @@ void iris_frc_dsc_change(void)
 				0xf1, 0xf1, 1);
 
 	payload = iris_get_ipopt_payload_data(IRIS_IP_DSC_DEN_3, 0xf1, 5);
+	if (!payload)
+		return;
 	for (i = 0; i < 11; i++) {
 		if ((iris_frc_dec_initial_delay != 0) && (i == 4))
 			continue;
@@ -2874,18 +2833,24 @@ void iris_frc_dsc_change(void)
 				0xf1, 0xf1, 1);
 
 	payload = iris_get_ipopt_payload_data(IRIS_IP_DSC_ENC_2, 0xf1, 21);
+	if (!payload)
+		return;
 	for (i = 0; i < 11; i++)
 		payload[i + 22*pcfg->frc_setting.pps_table_sel] = dsc_pps_table[i];
 	len  = iris_init_update_ipopt_t(IRIS_IP_DSC_ENC_2,
 				0xf1, 0xf1, 1);
 
 	payload = iris_get_ipopt_payload_data(IRIS_IP_DSC_ENC_TNR, 0xf1, 21);
+	if (!payload)
+		return;
 	for (i = 0; i < 11; i++)
 		payload[i + 22*pcfg->frc_setting.pps_table_sel] = dsc_pps_table[i];
 	len  = iris_init_update_ipopt_t(IRIS_IP_DSC_ENC_TNR, 0xf1, 0xf1, 1);
 
 	//encoder ctrl register.
 	payload = iris_get_ipopt_payload_data(IRIS_IP_DSC_ENC_2, 0xf1, 4);
+	if (!payload)
+		return;
 	payload[0 + 8*pcfg->frc_setting.pps_table_sel] = enc_ctrl_reg.slice_size2;
 	payload[1 + 8*pcfg->frc_setting.pps_table_sel] = enc_ctrl_reg.slice_size3;
 	payload[2 + 8*pcfg->frc_setting.pps_table_sel] = enc_ctrl_reg.stream_size;
@@ -2901,6 +2866,8 @@ void iris_frc_dsc_change(void)
 
 	//encoder ctrl register.
 	payload = iris_get_ipopt_payload_data(IRIS_IP_DSC_ENC_TNR, 0xf1, 4);
+	if (!payload)
+		return;
 	payload[0 + 8*pcfg->frc_setting.pps_table_sel] = enc_ctrl_reg.slice_size2;
 	payload[1 + 8*pcfg->frc_setting.pps_table_sel] = enc_ctrl_reg.slice_size3;
 	payload[2 + 8*pcfg->frc_setting.pps_table_sel] = enc_ctrl_reg.stream_size;
@@ -2959,7 +2926,7 @@ void iris_frc_ioinc_change(void)
 	iris_update_pq_opt(iris_pq_update_path, true);
 }
 
-void iris_sr_change(int inHeight, int inWidth, int outHeight, int outWidth, bool sr_sel)
+void iris_sr_change(int inHeight, int inWidth, int outHeight, int outWidth, bool sr_sel, bool update)
 {
 	uint8_t  chain = 0;
 	uint32_t *payload = NULL;
@@ -2974,6 +2941,8 @@ void iris_sr_change(int inHeight, int inWidth, int outHeight, int outWidth, bool
 
 	//sr
 	payload = iris_get_ipopt_payload_data(IRIS_IP_SR, 0xe0, 2);
+	if (!payload)
+		return;
 	if (sr_sel) {
 		payload[3] = (nhinc << 8) | nhinit_phase;
 		payload[4] = (nvinc << 8) | nvinit_phase;
@@ -2985,9 +2954,13 @@ void iris_sr_change(int inHeight, int inWidth, int outHeight, int outWidth, bool
 	}
 
 	iris_sync_current_ipopt(IRIS_IP_SR, 0xe0);
-	iris_init_update_ipopt_t(IRIS_IP_SR, 0xe0, 0xe0, chain);
 
-	iris_update_pq_opt(iris_pq_update_path, true);
+	if (update) {
+		iris_init_update_ipopt_t(IRIS_IP_SR, 0xe0, 0xe0, chain);
+
+		iris_update_pq_opt(iris_pq_update_path, true);
+	} else
+		iris_init_update_ipopt_t(IRIS_IP_SR, 0xe0, 0xe0, 1);
 }
 
 static void iris_sr_pwil_update(bool enable, int processWidth, int processHeight, uint8_t chain)
@@ -2996,6 +2969,8 @@ static void iris_sr_pwil_update(bool enable, int processWidth, int processHeight
 	u32 cmd[6];
 
 	payload = iris_get_ipopt_payload_data(IRIS_IP_PWIL, 0xf0, 5);
+	if (!payload)
+		return;
 	if (enable)
 		payload[0] = BITS_SET(payload[0], 2, 9, 0);
 	else
@@ -3003,6 +2978,8 @@ static void iris_sr_pwil_update(bool enable, int processWidth, int processHeight
 	iris_init_update_ipopt_t(IRIS_IP_PWIL, 0xf0, 0xf0, 1);
 
 	payload = iris_get_ipopt_payload_data(IRIS_IP_PWIL, 0xA0, 2);
+	if (!payload)
+		return;
 	if (enable)
 		payload[1] = BITS_SET(payload[1], 4, 19, 15);
 	else
@@ -3030,6 +3007,8 @@ static bool iris_pmu_frc_get(void)
 	uint32_t *payload = NULL;
 
 	payload = iris_get_ipopt_payload_data(IRIS_IP_SYS, ID_SYS_MPG, 2);
+	if (!payload)
+		return 0;
 	return (payload[0] & FRC_PWR) != 0;
 }
 
@@ -3083,19 +3062,16 @@ void iris_pt_sr_set(int enable, int processWidth, int processHeight)
 		pcfg->pt_sr_hsize,
 		pcfg->frc_setting.disp_vres,
 		pcfg->frc_setting.disp_hres,
-		pt_scale_sel);// graphic_sr_in_sel
+		pt_scale_sel,
+		false);// graphic_sr_in_sel
 
 	if (enable == 1) {
 		iris_ioinc_filter_ratio_send();
 		iris_sr_update();
-		iris_dma_trig(DMA_CH0, 0);
-		iris_update_pq_opt(iris_pq_update_path, true);
-		iris_dma_trig(DMA_CH12, 0);
+		iris_dma_trig(DMA_CH0 | DMA_CH12, 0);
 		iris_update_pq_opt(iris_pq_update_path, true);
 	} else if (enable == 0) {
-		iris_dma_trig(DMA_CH12, 0);
-		iris_update_pq_opt(iris_pq_update_path, true);
-		iris_dma_trig(DMA_CH0, 0);
+		iris_dma_trig(DMA_CH0 | DMA_CH12, 0);
 		iris_update_pq_opt(iris_pq_update_path, true);
 		iris_pmu_frc_set(false);
 	}
@@ -3123,7 +3099,48 @@ void iris_pt_sr_reset(void)
 
 	if (pcfg->pt_sr_enable) {
 		iris_sr_pwil_update(false, pcfg->frc_setting.disp_hres,
-				pcfg->frc_setting.disp_vres, 0);
+				pcfg->frc_setting.disp_vres, 1);
 		pcfg->pt_sr_enable = false;
+		iris_dma_trig(DMA_CH12, 0);
+		iris_update_pq_opt(iris_pq_update_path, true);
+		iris_dma_trig(DMA_CH0, 0);
+		iris_update_pq_opt(iris_pq_update_path, true);
+		iris_pmu_frc_set(false);
+		iris_sdr2hdr_set_degain();
 	}
+}
+
+void iris_pt_sr_restore(void)
+{
+	struct iris_cfg *pcfg = iris_get_cfg();
+
+	if (pcfg->pt_sr_enable_restore == false)
+		return;
+
+	iris_sr_level_set(PT_MODE, pcfg->pt_sr_guided_level,
+		pcfg->pt_sr_dejaggy_level,
+		pcfg->pt_sr_peaking_level,
+		pcfg->pt_sr_DLTI_level);
+	iris_pt_sr_set(true,
+		pcfg->pt_sr_hsize,
+		pcfg->pt_sr_vsize);
+	iris_sdr2hdr_set_degain();
+}
+
+void iris_pwil_idle_mask_update(bool enable)
+{
+	u32 cmd[4];
+	u32 *payload = NULL;
+
+	payload = iris_get_ipopt_payload_data(IRIS_IP_PWIL, 0xe3, 2);
+	cmd[0] = IRIS_PWIL_ADDR + PWIL_IDLE_MASK;
+	if (enable)
+		cmd[1] = 0x000001E7;
+	else
+		cmd[1] = payload[0];
+
+	cmd[2] = IRIS_PWIL_ADDR + PWIL_REG_UPDATE;
+	cmd[3] = 0x00000100;
+
+	iris_ocp_write_mult_vals(4, cmd);
 }

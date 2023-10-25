@@ -668,6 +668,8 @@ struct sde_connector {
 	u32 qsync_deferred_window_status;
 	/* Used to indicate whether to update panel backlight in crtc_commit */
 	bool bl_need_sync;
+	bool bl_nits_dirty;
+	bool dimming_scale_dirty;
 #endif /* OPLUS_FEATURE_DISPLAY */
 	bool misr_event_notify_enabled;
 	struct sde_misr_sign previous_misr_sign;

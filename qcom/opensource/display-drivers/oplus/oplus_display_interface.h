@@ -158,5 +158,19 @@ int oplus_panel_set_pinctrl_state(struct dsi_panel *panel, bool enable);
  */
 int oplus_panel_pinctrl_init(struct dsi_panel *panel);
 
+/**
+ * oplus_vddr_power_on_after_vddio() - oplus panel power on vddr as vddio vddr vci
+ * @panel: Display panel
+ * Return: Zero on Success
+ */
+int oplus_panel_vddr_on(struct dsi_display *display, const char *vreg_name);
+
+/**
+ * oplus_vddr_power_on_after_vddio() - oplus panel power off vddr as vci vddr vddio
+ * @panel: Display panel
+ * Return: Zero on Success
+ */
+int oplus_panel_vddr_off(struct dsi_display *display, const char *vreg_name);
+
 #endif /* __OPLUS_DISPLAY_INTERFACE_H__ */
 

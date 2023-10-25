@@ -19,11 +19,15 @@
 #include "dsi_clk.h"
 #include "dsi_pwr.h"
 #include "sde_dbg.h"
+#include "oplus_display_private_api.h"
 
+#define PANEL_IOCTL_BUF_MAX 41
 #define PANEL_REG_MAX_LENS 28
 #define PANEL_TX_MAX_BUF 512
 #define FFC_MODE_MAX_COUNT 4
 #define FFC_DELAY_MAX_FRAMES 10
+
+#define to_dsi_display(x) container_of(x, struct dsi_display, host)
 
 struct panel_id {
 	uint32_t DA;
@@ -37,7 +41,7 @@ struct panel_info {
 };
 
 struct panel_serial_number {
-	char serial_number[41];
+	char serial_number[PANEL_IOCTL_BUF_MAX];
 };
 
 struct display_timing_info {
@@ -66,6 +70,8 @@ struct panel_reg_rw {
 	uint32_t lens;     /*lens represent for u8 to kernel space*/
 	uint32_t value[PANEL_REG_MAX_LENS]; /*for read, value is empty, just user get function for read the value*/
 };
+
+extern bool oplus_temp_compensation_wait_for_vsync_set;
 
 int oplus_display_panel_get_id(void *buf);
 int oplus_display_panel_get_max_brightness(void *buf);
@@ -109,8 +115,7 @@ int oplus_display_panel_set_pwm_turbo(void *data);
 int oplus_display_panel_get_pwm_turbo(void *data);
 int oplus_panel_set_ffc_mode_unlock(struct dsi_panel *panel);
 int oplus_panel_set_ffc_kickoff_lock(struct dsi_panel *panel);
-int oplus_panel_check_ffc_config(struct dsi_panel *panel,
-		struct oplus_clk_osc *clk_osc_pending);
+int oplus_panel_check_ffc_config(struct dsi_panel *panel, struct oplus_clk_osc *clk_osc_pending);
 int oplus_display_update_clk_ffc(struct dsi_display *display,
 		struct dsi_display_mode *cur_mode, struct dsi_display_mode *adj_mode);
 int oplus_display_update_osc_ffc(struct dsi_display *display,
@@ -118,6 +123,14 @@ int oplus_display_update_osc_ffc(struct dsi_display *display,
 /* Add for dtsi parse*/
 int oplus_panel_parse_config(struct dsi_panel *panel);
 int oplus_display_panel_get_iris_loopback_status(void *buf);
+int oplus_display_update_dbv(struct dsi_panel *panel);
 
+int oplus_display_tx_cmd_set_lock(struct dsi_display *display,
+		enum dsi_cmd_set_type type);
+int oplus_wait_for_vsync(struct dsi_panel *panel);
+int oplus_sde_early_wakeup(struct dsi_panel *panel);
+void oplus_need_to_sync_te(struct dsi_panel *panel);
+void oplus_save_te_timestamp(struct sde_connector *c_conn, ktime_t timestamp);
+int oplus_display_panel_set_demua(void);
 #endif /* _OPLUS_DISPLAY_PANEL_COMMON_H_ */
 

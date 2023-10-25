@@ -455,7 +455,10 @@ int iris_dsi_send_cmds(struct dsi_panel *panel, struct dsi_cmd_desc *cmds,
 		vc_id_bak = cmds->msg.channel;
 		cmds->msg.channel = vc_id;
 
-		cmds->msg.flags = 0;
+		if (cmds->msg.flags & MIPI_DSI_MSG_CMD_DMA_SCHED)
+			cmds->msg.flags = MIPI_DSI_MSG_CMD_DMA_SCHED;
+		else
+			cmds->msg.flags = 0;
 
 		if (state == DSI_CMD_SET_STATE_LP)
 			cmds->msg.flags |= MIPI_DSI_MSG_USE_LPM;
@@ -654,7 +657,7 @@ static void _iris_add_tx_cmds(
 	ptx_cmd->msg.tx_buf = pocp_cmd->cmd;
 	ptx_cmd->msg.tx_len = pocp_cmd->cmd_len;
 	ptx_cmd->msg.flags = flags;
-	ptx_cmd->last_command = !(flags & MIPI_DSI_MSG_BATCH_COMMAND);
+	ptx_cmd->last_command = iris_is_last_cmd(&ptx_cmd->msg);
 	ptx_cmd->post_wait_ms = wait;
 }
 
@@ -821,7 +824,9 @@ static u32 _iris_pt_add_cmd(
 
 	for (i = 0; i < sum; i++) {
 		wait = (i == sum - 1) ? dsi_cmd->post_wait_ms : 0;
-		flags = (i == sum - 1) ? dsi_cmd->msg.flags : (dsi_cmd->msg.flags | MIPI_DSI_MSG_BATCH_COMMAND);
+		if (i != sum - 1)
+			iris_set_msg_flags(dsi_cmd, BATCH_FLAG);
+		flags = dsi_cmd->msg.flags;
 		_iris_add_tx_cmds(ptx_cmd + i, pocp_cmd + i, wait, flags);
 	}
 	return sum;
@@ -1265,6 +1270,8 @@ void iris_dtg_eco(bool enable, bool chain)
 	IRIS_LOGI("%s: %d", __func__, enable);
 
 	payload = iris_get_ipopt_payload_data(IRIS_IP_PWIL, 0x90, 2);
+	if (!payload)
+		return;
 	if (enable)
 		payload[0] |= 0x800;
 	else
@@ -1286,6 +1293,8 @@ void iris_dsi_rx_mode_switch(uint8_t rx_mode)
 	IRIS_LOGI("%s: %d", __func__, rx_mode);
 
 	payload = iris_get_ipopt_payload_data(IRIS_IP_PWIL, 0xf0, 3);
+	if (!payload)
+		return;
 	if (rx_mode == DSI_OP_CMD_MODE)
 		payload[0] |= 0x20001;
 	else
@@ -1293,6 +1302,8 @@ void iris_dsi_rx_mode_switch(uint8_t rx_mode)
 	iris_init_update_ipopt_t(IRIS_IP_PWIL, 0xf0, 0xf0, 1);
 
 	payload = iris_get_ipopt_payload_data(IRIS_IP_PWIL, 0x70, 3);
+	if (!payload)
+		return;
 	if (rx_mode == DSI_OP_CMD_MODE)
 		payload[0] &= ~0x4000;
 	else
@@ -1300,6 +1311,8 @@ void iris_dsi_rx_mode_switch(uint8_t rx_mode)
 	iris_init_update_ipopt_t(IRIS_IP_PWIL, 0x70, 0x70, 1);
 
 	payload = iris_get_ipopt_payload_data(IRIS_IP_PWIL, 0x90, 2);
+	if (!payload)
+		return;
 	if (rx_mode == DSI_OP_CMD_MODE)
 		payload[0] &= ~0x800;
 	else
@@ -1318,8 +1331,12 @@ void iris_dsi_rx_mode_switch(uint8_t rx_mode)
 		iris_init_update_ipopt_t(IRIS_IP_DTG, 0xf3, 0xf3, 0x01);
 	else {
 		payload = iris_get_ipopt_payload_data(IRIS_IP_DTG, 0xf5, 2);
+		if (!payload)
+			return;
 		ovs_dly_rfb = payload[0];
 		payload = iris_get_ipopt_payload_data(IRIS_IP_DTG, 0xf8, 2);
+		if (!payload)
+			return;
 		payload[3] = ovs_dly_rfb;
 		iris_init_update_ipopt_t(IRIS_IP_DTG, 0xf8, 0xf8, 0x01);
 	}
@@ -1357,6 +1374,8 @@ void iris_sw_te_enable(void)
 	u32 cmd[8];
 
 	payload = iris_get_ipopt_payload_data(IRIS_IP_DTG, ID_DTG_TE_SEL, 2);
+	if (!payload)
+		return;
 	dtg_ctrl = payload[0];
 	cmd[0] = IRIS_DTG_ADDR + DTG_CTRL;
 	cmd[1] = dtg_ctrl & ~0x800;
@@ -1376,8 +1395,12 @@ void iris_ovs_dly_change(bool enable)
 	u32 cmd[4];
 
 	payload = iris_get_ipopt_payload_data(IRIS_IP_DTG, 0x00, 2);
+	if (!payload)
+		return;
 	ovs_dly_pt = payload[15];
 	payload = iris_get_ipopt_payload_data(IRIS_IP_DTG, 0xf5, 2);
+	if (!payload)
+		return;
 	ovs_dly_rfb = payload[0];
 
 	cmd[0] = IRIS_DTG_ADDR + OVS_DLY;

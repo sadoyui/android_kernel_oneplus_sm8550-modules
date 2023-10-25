@@ -1029,6 +1029,8 @@ void iris_dump_cmdlist(uint32_t val)
 
 	for (ip_type = 0; ip_type < iris_get_cmd_list_cnt(); ip_type++) {
 		pip_index = iris_get_ip_idx(ip_type);
+		if (pip_index == NULL)
+			continue;
 		pr_err("\n");
 		if (ip_type == cmd_list_index)
 			pr_err("*iris-cmd-list-%d*\n", ip_type);
@@ -1143,8 +1145,6 @@ void iris_send_tsp_vsync_scanline_cmd(bool enable)
 		desc[i].post_wait_ms = cmd_data[i][4];
 		desc[i].msg.tx_buf = &cmd_data[i][7];
 		desc[i].msg.tx_len = cmd_data[i][6];
-		IRIS_LOGI("type %x, last %x, vc %x, wait %x, len %x\n", desc[i].msg.type, desc[i].last_command, desc[i].msg.channel, desc[i].post_wait_ms, desc[i].msg.tx_len);
-		IRIS_LOGI("data %x %x %x %x %x\n", cmd_data[i][7], cmd_data[i][8], cmd_data[i][9], cmd_data[i][10], cmd_data[i][11]);
 	}
 
 	if (iris_get_abyp_mode(pcfg->panel) == PASS_THROUGH_MODE)

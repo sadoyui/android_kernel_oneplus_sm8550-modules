@@ -26,8 +26,6 @@ void iris_power_off(struct dsi_panel *panel);
 int iris_set_pinctrl_state(bool enable);
 int iris_pt_send_panel_cmd(struct dsi_panel *panel,
 		struct dsi_panel_cmd_set *cmdset);
-int iris_abyp_send_panel_cmd(struct dsi_panel *panel,
-		struct dsi_panel_cmd_set *cmdset);
 int iris_enable(struct dsi_panel *panel, struct dsi_panel_cmd_set *on_cmds);
 int iris_disable(struct dsi_panel *panel, bool dead, struct dsi_panel_cmd_set *off_cmds);
 void iris_set_panel_timing(struct dsi_display *display, uint32_t index,
@@ -39,7 +37,6 @@ int iris_switch(struct dsi_panel *panel,
 		      struct dsi_mode_info *new_timing);
 void iris_update_2nd_active_timing(struct dsi_panel *panel);
 int iris_status_get(struct dsi_display_ctrl *ctrl, struct dsi_panel *panel);
-int iris_get_status(void);
 int iris_set_aod(struct dsi_panel *panel, bool aod);
 bool iris_get_aod(struct dsi_panel *panel);
 int iris_set_fod(struct dsi_panel *panel, bool fod);
@@ -71,6 +68,7 @@ void iris_sde_plane_setup_csc(void *csc_ptr);
 int iris_sde_kms_iris_operate(struct msm_kms *kms,
 		u32 operate_type, struct msm_iris_operate_value *operate_value);
 void iris_sde_update_dither_depth_map(uint32_t *map, uint32_t depth);
+void iris_sde_prepare_commit(uint32_t num_phys_encs, void *phys_enc);
 void iris_sde_prepare_for_kickoff(uint32_t num_phys_encs, void *phys_enc);
 void iris_sde_encoder_sync_panel_brightness(uint32_t num_phys_encs,
 		void *phys_enc);
@@ -94,7 +92,6 @@ void iris_dsi_ctrl_dump_desc_cmd(struct dsi_ctrl *dsi_ctrl,
 void iris_sde_hw_sspp_setup_csc_v2(void *pctx, const void *pfmt, void *pdata);
 int iris_platform_get(void);
 void iris_qsync_set(bool enable);
-void iris_init_tm_points_lut(void);
 int iris_esd_ctrl_get(void);
 bool iris_check_reg_read(struct dsi_panel *panel);
 void iris_dsi_rx_mode_switch(uint8_t rx_mode);
@@ -103,8 +100,7 @@ uint32_t iris_schedule_line_no_get(void);
 void iris_ioctl_lock(void);
 void iris_ioctl_unlock(void);
 bool iris_qsync_update_need(void);
-void iris_set_two_wire0_enable(void);
-void iris_sysfs_status_deinit(void);
+
 int iris_pure_i2c_bus_init(void);
 void iris_pure_i2c_bus_exit(void);
 int iris_i2c_bus_init(void);
@@ -123,5 +119,8 @@ void iris_fpga_adjust_read_buf(u32 repeated_bytes,
 							   u32 read_cnt,
 							   u8 *rd_buf);
 #endif
+
+void iris_update_panel_ap_te(uint32_t new_te);
+void iris_EDR_backlight_ctrl(u32 hdr_nit, u32 ratio_panel);
 
 #endif // _DSI_IRIS_API_H_

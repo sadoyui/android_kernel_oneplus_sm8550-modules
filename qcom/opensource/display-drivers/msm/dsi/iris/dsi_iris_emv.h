@@ -30,6 +30,7 @@ int iris_emv_get_path_bitwidth(void);
 void iris_emv_on_lightoff(void);
 void iris_emv_on_mipi1_up(void);
 void iris_emv_on_mipi1_down(void);
+void iris_osd_pipeline_switch(bool on);
 void iris_emv_on_dual_open(void);
 bool iris_emv_on_dual_on(bool success);
 void iris_emv_on_dual_closing(void);

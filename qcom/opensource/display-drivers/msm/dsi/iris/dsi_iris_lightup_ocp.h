@@ -147,4 +147,6 @@ void iris_set_pwil_mode(u8 mode, bool osd_enable, int state, bool commit);
 void iris_dtg_eco(bool enable, bool chain);
 void iris_ovs_dly_change(bool enable);
 void iris_dtg_update_reset(void);
+int iris_abyp_send_panel_cmd(struct dsi_panel *panel,
+		struct dsi_panel_cmd_set *cmdset);
 #endif // _DSI_IRIS_LIGHTUP_OCP_H_

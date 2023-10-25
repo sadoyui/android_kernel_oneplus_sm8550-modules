@@ -119,12 +119,6 @@ int iris_pure_i2c_single_write(uint32_t addr, uint32_t val)
 
 	memset(&msg, 0, sizeof(msg));
 
-	/*data_list = kmalloc(9, GFP_KERNEL);
-	if (!data_list) {
-		IRIS_LOGE("%s, %d: allocate memory fails\n", __func__, __LINE__);
-		return -ENOMEM;
-	}*/
-
 	data_list[0] = 0xcc;
 	data_list[1] = (addr >> 0) & 0xff;
 	data_list[2] = (addr >> 8) & 0xff;
@@ -149,8 +143,6 @@ int iris_pure_i2c_single_write(uint32_t addr, uint32_t val)
 			__func__, __LINE__, addr, ret);
 	}
 
-	//kfree(data_list);
-	//data_list = NULL;
 	return ret;
 }
 

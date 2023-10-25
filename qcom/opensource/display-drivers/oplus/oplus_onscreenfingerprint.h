@@ -14,10 +14,11 @@
 #include "oplus_display_private_api.h"
 
 enum oplus_ofp_log_level {
-	OPLUS_OFP_LOG_LEVEL_ERR = 0,
-	OPLUS_OFP_LOG_LEVEL_WARN = 1,
-	OPLUS_OFP_LOG_LEVEL_INFO = 2,
-	OPLUS_OFP_LOG_LEVEL_DEBUG = 3,
+	OPLUS_OFP_LOG_LEVEL_NONE = 0,
+	OPLUS_OFP_LOG_LEVEL_ERR,
+	OPLUS_OFP_LOG_LEVEL_WARN,
+	OPLUS_OFP_LOG_LEVEL_INFO,
+	OPLUS_OFP_LOG_LEVEL_DEBUG,
 };
 
 enum oplus_ofp_display_id {

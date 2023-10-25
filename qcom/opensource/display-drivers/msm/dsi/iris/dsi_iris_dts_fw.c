@@ -418,7 +418,8 @@ int iris_parse_dts_ctx(const uint8_t *fw_name)
 		IRIS_LOGI("%s(%d), request name: %s, size: %u.",
 				__func__, __LINE__, fw_name, fw->size);
 	else {
-		IRIS_LOGE("%s(), failed to request: %s", __func__, fw_name);
+		IRIS_LOGE("%s(), failed to request: %s", __func__,
+				fw_name);
 		return -EINVAL;
 	}
 

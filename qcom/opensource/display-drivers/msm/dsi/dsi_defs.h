@@ -32,6 +32,30 @@
 #define DSI_DEBUG(fmt, ...)	DRM_DEV_DEBUG(NULL, "[msm-dsi-debug]: "fmt, \
 								##__VA_ARGS__)
 
+#ifdef OPLUS_FEATURE_DISPLAY
+#include <soc/oplus/system/oplus_mm_kevent_fb.h>
+#define DSI_MM_ERR(fmt, ...)	\
+	do { \
+			DRM_DEV_ERROR(NULL, "[msm-dsi-error]: " fmt, ##__VA_ARGS__); \
+			mm_fb_display_kevent_named(MM_FB_KEY_RATELIMIT_1H, fmt, ##__VA_ARGS__); \
+		} while(0)
+#define DSI_MM_WARN(fmt, ...)	\
+	do { \
+			DRM_WARN("[msm-dsi-warn]: " fmt, ##__VA_ARGS__); \
+			mm_fb_display_kevent_named(MM_FB_KEY_RATELIMIT_1H, fmt, ##__VA_ARGS__); \
+		} while(0)
+#define DSI_MM_INFO(fmt, ...)	\
+	do { \
+			DRM_DEV_INFO(NULL, "[msm-dsi-info]: " fmt, ##__VA_ARGS__); \
+			mm_fb_display_kevent_named(MM_FB_KEY_RATELIMIT_1H, fmt, ##__VA_ARGS__); \
+		} while(0)
+#define DSI_MM_DEBUG(fmt, ...)	\
+	do { \
+			DRM_DEV_DEBUG(NULL, "[msm-dsi-debug]: " fmt, ##__VA_ARGS__); \
+			mm_fb_display_kevent_named(MM_FB_KEY_RATELIMIT_1H, fmt, ##__VA_ARGS__); \
+		} while(0)
+#endif /* OPLUS_FEATURE_DISPLAY */
+
 /**
  * enum dsi_pixel_format - DSI pixel formats
  * @DSI_PIXEL_FORMAT_RGB565:
@@ -297,6 +321,10 @@ enum dsi_cmd_set_type {
 	DSI_CMD_SET_POST_TIMING_SWITCH,
 	DSI_CMD_SET_QSYNC_ON,
 	DSI_CMD_SET_QSYNC_OFF,
+#ifdef OPLUS_FEATURE_DISPLAY_TEMP_COMPENSATION
+	DSI_CMD_READ_TEMP_COMPENSATION_REG,
+	DSI_CMD_TEMPERATURE_COMPENSATION,
+#endif /* OPLUS_FEATURE_DISPLAY_TEMP_COMPENSATION */
 #ifdef OPLUS_FEATURE_DISPLAY_ONSCREENFINGERPRINT
 	DSI_CMD_HBM_ON,
 	DSI_CMD_HBM_OFF,
@@ -335,6 +363,11 @@ enum dsi_cmd_set_type {
 	DSI_CMD_LOADING_EFFECT_OFF,
 	DSI_CMD_HBM_ENTER_SWITCH,
 	DSI_CMD_HBM_EXIT_SWITCH,
+	DSI_CMD_PWM_SWITCH_HIGH,
+	DSI_CMD_PWM_SWITCH_LOW,
+	DSI_CMD_TIMMING_PWM_SWITCH_HIGH,
+	DSI_CMD_TIMMING_PWM_SWITCH_LOW,
+	DSI_CMD_DISABLE_PWM_BACKLIGHT_COMPENSATION,
 	/* OPLUS_FEATURE_ADFR, qsync enhance */
 	DSI_CMD_QSYNC_MIN_FPS_0,
 	DSI_CMD_QSYNC_MIN_FPS_1,
@@ -358,6 +391,7 @@ enum dsi_cmd_set_type {
 	DSI_CMD_CABC_VIDEO,
 	DSI_CMD_ESD_SWITCH_PAGE,
 	DSI_CMD_PANEL_DATE_SWITCH,
+	DSI_CMD_PANEL_INFO_SWITCH_PAGE,
 	DSI_CMD_PANEL_INIT,
 	DSI_CMD_PWM_TURBO_ON,
 	DSI_CMD_PWM_TURBO_OFF,
@@ -366,10 +400,18 @@ enum dsi_cmd_set_type {
 	DSI_CMD_PWM_TURBO_AOR_ON,
 	DSI_CMD_PWM_TURBO_AOR_OFF,
 	DSI_CMD_PWM_TURBO_TIMING_SWITCH,
+	DSI_CMD_SET_BL_DEMUA1,
+	DSI_CMD_SET_BL_DEMUA2,
+	DSI_CMD_SET_BL_DEMUA3,
+	DSI_CMD_SET_BL_DEMUA4,
+	DSI_CMD_SET_BL_DEMUA5,
+	DSI_CMD_SET_BL_DEMUA6,
 #endif /* OPLUS_FEATURE_DISPLAY */
 #if defined(CONFIG_PXLW_IRIS)
 	DSI_CMD_SET_IRIS_SWITCH_TSP_VSYNC_SCANLINE,
 #endif
+	DSI_CMD_DEFAULT_SWITCH_PAGE,
+	DSI_CMD_SKIPFRAME_DBV,
 	DSI_CMD_SET_MAX
 };
 
@@ -591,6 +633,7 @@ struct dsi_host_common_cfg {
 	enum dsi_te_mode te_mode;
 	enum dsi_trigger_type mdp_cmd_trigger;
 	enum dsi_trigger_type dma_cmd_trigger;
+	enum dsi_trigger_type force_dma_cmd_trigger;
 	u32 cmd_trigger_stream;
 	enum dsi_color_swap_mode swap_mode;
 	bool bit_swap_red;

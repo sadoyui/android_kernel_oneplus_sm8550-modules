@@ -144,7 +144,8 @@ struct msmfb_iris_demura_xy *iris_get_demura_xy(void);
 void iris_sr_level_set(u32 mode, u32 guided_level, u32 dejaggy_level, u32 peaking_level, u32 DLTI_level);
 void iris_set_ai_lce_disable(bool val);
 bool iris_get_ai_lce_disable(void);
-void iris_pwil_dport_mode(bool dport_mode);
 void iris_sdr2hdr_hdr_update(void);
+void iris_init_tm_points_lut(void);
+void iris_brightness_para_reset(void);
 void iris_sdr2hdr_set_degain(void);
 #endif // _DSI_IRIS_PQ_H_

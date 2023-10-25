@@ -9,6 +9,8 @@
 ******************************************************************/
 
 #include "oplus_bl.h"
+#include "oplus_display_interface.h"
+#include "oplus_display_panel_common.h"
 #if defined(CONFIG_PXLW_IRIS)
 #include "dsi_iris_api.h"
 #endif
@@ -16,6 +18,7 @@
 char oplus_global_hbm_flags = 0x0;
 static int enable_hbm_enter_dly_on_flags = 0;
 static int enable_hbm_exit_dly_on_flags = 0;
+extern u32 oplus_last_backlight;
 
 int oplus_panel_parse_bl_config(struct dsi_panel *panel)
 {
@@ -112,6 +115,18 @@ int oplus_panel_parse_bl_config(struct dsi_panel *panel)
 			"oplus,dsi-global-hbm-scale-mapping");
 	LCD_INFO("oplus,dsi-global-hbm-scale-mapping: %s\n",
 			panel->bl_config.global_hbm_scale_mapping ? "true" : "false");
+
+	rc = utils->read_u32(utils->data, "oplus,pwm-switch-backlight-threshold", &val);
+	if (rc) {
+		panel->oplus_priv.pwm_switch_support = false;
+	} else {
+		panel->bl_config.pwm_bl_threshold = val;
+	}
+	panel->pwm_power_on = false;
+	panel->pwm_hbm_state = false;
+	LCD_INFO("[%s] oplus,pwm-switch-backlight-threshold=%d\n",
+			panel->oplus_priv.vendor_name,
+			panel->bl_config.pwm_bl_threshold);
 
 	return 0;
 }
@@ -257,3 +272,125 @@ void oplus_display_panel_set_global_hbm_status(int global_hbm_status)
 	oplus_global_hbm_flags = global_hbm_status;
 	LCD_INFO("set oplus_global_hbm_flags = %d\n", global_hbm_status);
 }
+
+int oplus_hbm_pwm_state(struct dsi_panel *panel, bool hbm_state)
+{
+	if (!panel) {
+		LCD_ERR("Invalid panel params\n");
+		return -EINVAL;
+	}
+
+	if (panel->oplus_priv.pwm_switch_support && hbm_state) {
+		oplus_panel_event_data_notifier_trigger(panel, DRM_PANEL_EVENT_PWM_TURBO, !hbm_state, true);
+	}
+
+	if (panel->oplus_priv.pwm_switch_support) {
+		panel->pwm_hbm_state = hbm_state;
+
+		if (!hbm_state) {
+			panel->pwm_power_on = true;
+		}
+	}
+	LCD_INFO("set oplus pwm_hbm_state = %d\n", hbm_state);
+	return 0;
+}
+
+int oplus_panel_pwm_switch_backlight(struct dsi_panel *panel, u32 bl_lvl)
+{
+	int rc = 0;
+	u32 pwm_switch_state_last = panel->oplus_pwm_switch_state;
+	u32 pwm_switch_cmd = 0;
+	u32 disable_compensation_cmd = 0;
+	int pulse = 0;
+
+	if (!panel->oplus_priv.pwm_switch_support)
+		return rc;
+
+	if (panel->pwm_hbm_state) {
+		LCD_INFO("panel pwm_hbm_state true disable pwm switch!\n");
+		return rc;
+	}
+
+	if (bl_lvl > panel->bl_config.pwm_bl_threshold) {
+		panel->oplus_pwm_switch_state = PWM_SWITCH_HIGH_STATE;
+		pwm_switch_cmd = DSI_CMD_PWM_SWITCH_HIGH;
+		if (panel->pwm_power_on || oplus_last_backlight == 0)
+			pwm_switch_cmd = DSI_CMD_TIMMING_PWM_SWITCH_HIGH;
+		pulse = 0;
+	} else {
+		panel->oplus_pwm_switch_state = PWM_SWITCH_LOW_STATE;
+		pwm_switch_cmd = DSI_CMD_PWM_SWITCH_LOW;
+		if (panel->pwm_power_on || oplus_last_backlight == 0)
+			pwm_switch_cmd = DSI_CMD_TIMMING_PWM_SWITCH_LOW;
+		pulse = 1;
+	}
+	if (!strcmp(panel->name, "AC052 P 3 A0003 dsc cmd mode panel")
+		|| !strcmp(panel->name, "AC052 S 3 A0001 dsc cmd mode panel")
+		|| !strcmp(panel->name, "AA536 P 3 A0001 dsc cmd mode panel")) {
+		disable_compensation_cmd = DSI_CMD_DISABLE_PWM_BACKLIGHT_COMPENSATION;
+		oplus_panel_pwm_switch_wait_te_tx_cmd(panel, pwm_switch_cmd, disable_compensation_cmd, pwm_switch_state_last);
+	} else {
+		if (pwm_switch_state_last != panel->oplus_pwm_switch_state ||
+			oplus_last_backlight == 0 || panel->pwm_power_on) {
+			panel->pwm_power_on = false;
+			rc = dsi_panel_tx_cmd_set(panel, pwm_switch_cmd);
+		}
+	}
+	oplus_panel_event_data_notifier_trigger(panel, DRM_PANEL_EVENT_PWM_TURBO, pulse, true);
+
+	return 0;
+}
+
+int oplus_panel_pwm_switch_timing_switch(struct dsi_panel *panel)
+{
+	int rc = 0;
+	u32 pwm_switch_cmd = DSI_CMD_TIMMING_PWM_SWITCH_LOW;
+
+	if (!panel->oplus_priv.pwm_switch_support)
+		return rc;
+
+	if (panel->pwm_hbm_state) {
+		LCD_INFO("panel pwm_hbm_state true disable pwm switch!\n");
+		return rc;
+	}
+
+
+	if (panel->oplus_pwm_switch_state  == PWM_SWITCH_HIGH_STATE) {
+		pwm_switch_cmd = DSI_CMD_TIMMING_PWM_SWITCH_HIGH;
+	}
+
+	rc = dsi_panel_tx_cmd_set(panel, pwm_switch_cmd);
+
+	return rc;
+}
+int oplus_panel_pwm_switch_wait_te_tx_cmd(struct dsi_panel *panel, u32 pwm_switch_cmd, u32 disable_compensation_cmd, u32 pwm_switch_state_last)
+{
+	int rc = 0;
+	unsigned int refresh_rate = panel->cur_mode->timing.refresh_rate;
+
+	if (panel->pwm_power_on == true || oplus_last_backlight == 0) {
+		rc = dsi_panel_tx_cmd_set(panel, pwm_switch_cmd);
+		panel->pwm_power_on = false;
+		return rc;
+	}
+	if (pwm_switch_state_last != panel->oplus_pwm_switch_state ||
+		oplus_last_backlight == 0) {
+		oplus_sde_early_wakeup(panel);
+		oplus_wait_for_vsync(panel);
+		if (refresh_rate == 60) {
+			oplus_need_to_sync_te(panel);
+		}
+		rc = dsi_panel_tx_cmd_set(panel, pwm_switch_cmd);
+
+		if (!strcmp(panel->name, "AC052 P 3 A0003 dsc cmd mode panel")
+			|| !strcmp(panel->name, "AC052 S 3 A0001 dsc cmd mode panel")) {
+			oplus_wait_for_vsync(panel);
+			if (refresh_rate == 60) {
+				oplus_need_to_sync_te(panel);
+			}
+			rc = dsi_panel_tx_cmd_set(panel, disable_compensation_cmd);
+		}
+	}
+	return rc;
+}
+

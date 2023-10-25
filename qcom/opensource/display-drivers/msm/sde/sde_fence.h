@@ -231,12 +231,6 @@ void sde_debugfs_timeline_dump(struct sde_fence_context *ctx,
  */
 void sde_fence_list_dump(struct dma_fence *fence, struct seq_file **s);
 
-/**
- * sde_fence_dump - dumps fence info for specified fence
- * @fence: Pointer to fence to dump info for
- */
-void sde_fence_dump(struct dma_fence *fence);
-
 #else
 static inline void *sde_sync_get(uint64_t fd)
 {
@@ -308,10 +302,6 @@ void sde_fence_list_dump(struct dma_fence *fence, struct seq_file **s)
 	/* do nothing */
 }
 
-void sde_fence_dump(struct dma_fence *fence)
-{
-	/* do nothing */
-}
 #endif /* IS_ENABLED(CONFIG_SW_SYNC) */
 
 #endif /* _SDE_FENCE_H_ */

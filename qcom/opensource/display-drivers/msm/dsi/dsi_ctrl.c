@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2021-2023, Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2021-2022 Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2016-2021, The Linux Foundation. All rights reserved.
  */
 
@@ -24,6 +24,7 @@
 #include "sde_dbg.h"
 
 #ifdef OPLUS_FEATURE_DISPLAY
+#include <soc/oplus/system/oplus_mm_kevent_fb.h>
 #include "../oplus/oplus_display_interface.h"
 #endif /* OPLUS_FEATURE_DISPLAY */
 
@@ -49,6 +50,15 @@
 		fmt, c->name, ##__VA_ARGS__)
 #define DSI_CTRL_WARN(c, fmt, ...)	DRM_WARN("[msm-dsi-warn]: %s: " fmt,\
 		c ? c->name : "inv", ##__VA_ARGS__)
+
+#ifdef OPLUS_FEATURE_DISPLAY
+#define DSI_CTRL_MM_ERR(c, fmt, ...) \
+	do { \
+		DRM_DEV_ERROR(NULL, "[msm-dsi-error]: %s: "\
+				fmt, c ? c->name : "inv", ##__VA_ARGS__); \
+		mm_fb_display_kevent_named(MM_FB_KEY_RATELIMIT_1H, fmt, ##__VA_ARGS__); \
+	} while(0)
+#endif /* OPLUS_FEATURE_DISPLAY */
 
 struct dsi_ctrl_list_item {
 	struct dsi_ctrl *ctrl;
@@ -387,6 +397,10 @@ static void dsi_ctrl_dma_cmd_wait_for_done(struct dsi_ctrl *dsi_ctrl)
 	if (ret == 0 && !atomic_read(&dsi_ctrl->dma_irq_trig)) {
 		status = dsi_hw_ops.get_interrupt_status(&dsi_ctrl->hw);
 		if (status & mask) {
+#ifdef OPLUS_FEATURE_DISPLAY
+			DSI_CTRL_MM_ERR(dsi_ctrl, "DisplayDriverID@@416$$dma_tx done but irq not triggered, status=%X, mask=%X\n",
+					status, mask);
+#endif /* OPLUS_FEATURE_DISPLAY */
 			status |= (DSI_CMD_MODE_DMA_DONE | DSI_BTA_DONE);
 			dsi_hw_ops.clear_interrupt_status(&dsi_ctrl->hw,
 					status);
@@ -397,6 +411,10 @@ static void dsi_ctrl_dma_cmd_wait_for_done(struct dsi_ctrl *dsi_ctrl)
 			SDE_EVT32(dsi_ctrl->cell_index, SDE_EVTLOG_ERROR);
 			DSI_CTRL_ERR(dsi_ctrl,
 					"Command transfer failed\n");
+#ifdef OPLUS_FEATURE_DISPLAY
+			DSI_CTRL_MM_ERR(dsi_ctrl, "DisplayDriverID@@401$$Command transfer failed, status=%X, mask=%X\n",
+					status, mask);
+#endif /* OPLUS_FEATURE_DISPLAY */
 		}
 		dsi_ctrl_disable_status_interrupt(dsi_ctrl,
 					DSI_SINT_CMD_MODE_DMA_DONE);
@@ -432,7 +450,10 @@ static void dsi_ctrl_clear_dma_status(struct dsi_ctrl *dsi_ctrl)
 
 static void dsi_ctrl_post_cmd_transfer(struct dsi_ctrl *dsi_ctrl)
 {
+	int rc = 0;
 	struct dsi_ctrl_hw_ops dsi_hw_ops = dsi_ctrl->hw.ops;
+	struct dsi_clk_ctrl_info clk_info;
+	u32 mask = BIT(DSI_FIFO_OVERFLOW);
 
 	mutex_lock(&dsi_ctrl->ctrl_lock);
 
@@ -451,9 +472,26 @@ static void dsi_ctrl_post_cmd_transfer(struct dsi_ctrl *dsi_ctrl)
 		dsi_hw_ops.reset_trig_ctrl(&dsi_ctrl->hw,
 				&dsi_ctrl->host_config.common_config);
 
+	/* Command engine disable, unmask overflow, remove vote on clocks and gdsc */
+	rc = dsi_ctrl_set_cmd_engine_state(dsi_ctrl, DSI_CTRL_ENGINE_OFF, false);
+	if (rc)
+		DSI_CTRL_ERR(dsi_ctrl, "failed to disable command engine\n");
+
+	if (!(dsi_ctrl->pending_cmd_flags & DSI_CTRL_CMD_READ))
+		dsi_ctrl_mask_error_status_interrupts(dsi_ctrl, mask, false);
+
 	mutex_unlock(&dsi_ctrl->ctrl_lock);
 
-	dsi_ctrl_transfer_cleanup(dsi_ctrl);
+	clk_info.client = DSI_CLK_REQ_DSI_CLIENT;
+	clk_info.clk_type = DSI_ALL_CLKS;
+	clk_info.clk_state = DSI_CLK_OFF;
+
+	rc = dsi_ctrl->clk_cb.dsi_clk_cb(dsi_ctrl->clk_cb.priv, clk_info);
+	if (rc)
+		DSI_CTRL_ERR(dsi_ctrl, "failed to disable clocks\n");
+
+	(void)pm_runtime_put_sync(dsi_ctrl->drm_dev->dev);
+
 }
 
 static void dsi_ctrl_post_cmd_transfer_work(struct work_struct *work)
@@ -1062,10 +1100,6 @@ static int dsi_ctrl_update_link_freqs(struct dsi_ctrl *dsi_ctrl,
 		}
 	} else if (config->panel_mode == DSI_OP_CMD_MODE) {
 		/* Calculate the bit rate needed to match dsi transfer time */
-		if (host_cfg->phy_type == DSI_PHY_TYPE_CPHY) {
-			min_dsi_clk_hz *= bits_per_symbol;
-			do_div(min_dsi_clk_hz, num_of_symbols);
-		}
 		bit_rate = min_dsi_clk_hz * frame_time_us;
 		do_div(bit_rate, dsi_transfer_time_us);
 		bit_rate = bit_rate * num_of_lanes;
@@ -1116,6 +1150,11 @@ static int dsi_ctrl_update_link_freqs(struct dsi_ctrl *dsi_ctrl,
 	dsi_ctrl->clk_freq.pix_clk_rate = pclk_rate;
 	dsi_ctrl->clk_freq.esc_clk_rate = config->esc_clk_rate_hz;
 
+	rc = dsi_clk_set_link_frequencies(clk_handle, dsi_ctrl->clk_freq,
+					dsi_ctrl->cell_index);
+	if (rc)
+		DSI_CTRL_ERR(dsi_ctrl, "Failed to update link frequencies\n");
+
 	return rc;
 }
 
@@ -1128,6 +1167,9 @@ static int dsi_ctrl_enable_supplies(struct dsi_ctrl *dsi_ctrl, bool enable)
 		if (rc < 0) {
 			DSI_CTRL_ERR(dsi_ctrl, "failed to enable power resource %d\n", rc);
 			SDE_EVT32(rc, SDE_EVTLOG_ERROR);
+#ifdef OPLUS_FEATURE_DISPLAY
+			DSI_CTRL_MM_ERR(dsi_ctrl, "DisplayDriverID@@406$$Power resource enable failed, rc=%d\n", rc);
+#endif /* OPLUS_FEATURE_DISPLAY */
 			goto error;
 		}
 
@@ -1136,6 +1178,9 @@ static int dsi_ctrl_enable_supplies(struct dsi_ctrl *dsi_ctrl, bool enable)
 				&dsi_ctrl->pwr_info.host_pwr, true);
 			if (rc) {
 				DSI_CTRL_ERR(dsi_ctrl, "failed to enable host power regs\n");
+#ifdef OPLUS_FEATURE_DISPLAY
+				DSI_CTRL_MM_ERR(dsi_ctrl, "DisplayDriverID@@406$$failed to enable host power regs\n");
+#endif /* OPLUS_FEATURE_DISPLAY */
 				goto error_get_sync;
 			}
 		}
@@ -3383,8 +3428,8 @@ int dsi_ctrl_update_host_config(struct dsi_ctrl *ctrl,
 	if (!(flags & (DSI_MODE_FLAG_SEAMLESS | DSI_MODE_FLAG_VRR |
 		       DSI_MODE_FLAG_DYN_CLK))) {
 		/*
-		 * for dynamic clk switch case link frequencies would
-		 * be updated in dsi_display_update_dsi_bitrate().
+		 * for dynamic clk switch case link frequence would
+		 * be updated dsi_display_dynamic_clk_switch().
 		 */
 		rc = dsi_ctrl_update_link_freqs(ctrl, config, clk_handle,
 				mode);
@@ -3551,37 +3596,6 @@ int dsi_ctrl_cmd_transfer(struct dsi_ctrl *dsi_ctrl, struct dsi_cmd_desc *cmd)
 EXPORT_SYMBOL(dsi_ctrl_cmd_transfer);
 #endif /* OPLUS_FEATURE_DISPLAY */
 
-void dsi_ctrl_transfer_cleanup(struct dsi_ctrl *dsi_ctrl)
-{
-	int rc = 0;
-	struct dsi_clk_ctrl_info clk_info;
-	u32 mask = BIT(DSI_FIFO_OVERFLOW);
-
-	mutex_lock(&dsi_ctrl->ctrl_lock);
-
-	SDE_EVT32(SDE_EVTLOG_FUNC_ENTRY, dsi_ctrl->cell_index, dsi_ctrl->pending_cmd_flags);
-
-	/* Command engine disable, unmask overflow, remove vote on clocks and gdsc */
-	rc = dsi_ctrl_set_cmd_engine_state(dsi_ctrl, DSI_CTRL_ENGINE_OFF, false);
-	if (rc)
-		DSI_CTRL_ERR(dsi_ctrl, "failed to disable command engine\n");
-
-	if (!(dsi_ctrl->pending_cmd_flags & DSI_CTRL_CMD_READ))
-		dsi_ctrl_mask_error_status_interrupts(dsi_ctrl, mask, false);
-
-	mutex_unlock(&dsi_ctrl->ctrl_lock);
-
-	clk_info.client = DSI_CLK_REQ_DSI_CLIENT;
-	clk_info.clk_type = DSI_ALL_CLKS;
-	clk_info.clk_state = DSI_CLK_OFF;
-
-	rc = dsi_ctrl->clk_cb.dsi_clk_cb(dsi_ctrl->clk_cb.priv, clk_info);
-	if (rc)
-		DSI_CTRL_ERR(dsi_ctrl, "failed to disable clocks\n");
-
-	(void)pm_runtime_put_sync(dsi_ctrl->drm_dev->dev);
-}
-
 /**
  * dsi_ctrl_transfer_unprepare() - Clean up post a command transfer
  * @dsi_ctrl:                 DSI controller handle.
@@ -3598,12 +3612,12 @@ void dsi_ctrl_transfer_unprepare(struct dsi_ctrl *dsi_ctrl, u32 flags)
 	if (!dsi_ctrl)
 		return;
 
-	dsi_ctrl->pending_cmd_flags = flags;
-
 	if (!(flags & DSI_CTRL_CMD_LAST_COMMAND))
 		return;
 
 	SDE_EVT32(SDE_EVTLOG_FUNC_ENTRY, dsi_ctrl->cell_index, flags);
+
+	dsi_ctrl->pending_cmd_flags = flags;
 
 	if (flags & DSI_CTRL_CMD_ASYNC_WAIT) {
 		dsi_ctrl->post_tx_queued = true;
@@ -3891,6 +3905,22 @@ int dsi_ctrl_trigger_test_pattern(struct dsi_ctrl *dsi_ctrl)
 	mutex_unlock(&dsi_ctrl->ctrl_lock);
 
 	return ret;
+}
+
+int dsi_ctrl_override_dma_cmd_trig(struct dsi_ctrl *dsi_ctrl, enum dsi_trigger_type type)
+{
+	int rc = 0;
+
+	if (!dsi_ctrl || type == DSI_TRIGGER_MAX) {
+		DSI_CTRL_ERR(dsi_ctrl, "Invalid params\n");
+		return -EINVAL;
+	}
+
+	mutex_lock(&dsi_ctrl->ctrl_lock);
+	dsi_ctrl->host_config.common_config.force_dma_cmd_trigger = type;
+	mutex_unlock(&dsi_ctrl->ctrl_lock);
+
+	return rc;
 }
 
 /**

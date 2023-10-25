@@ -29,7 +29,7 @@ bool iris_is_last_cmd(const struct mipi_dsi_msg *pmsg)
 	if (!pmsg)
 		return false;
 
-	return (pmsg->flags & MIPI_DSI_MSG_BATCH_COMMAND);
+	return !(pmsg->flags & MIPI_DSI_MSG_BATCH_COMMAND);
 }
 
 bool iris_is_curmode_cmd_mode(void)

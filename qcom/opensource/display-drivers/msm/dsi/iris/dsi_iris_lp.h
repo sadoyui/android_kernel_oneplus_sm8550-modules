@@ -29,6 +29,8 @@
 #define ID_TX_BYPASS_CTRL 0x06
 #define ID_DTG_TE_SEL 0xF1
 
+#define RETRY_MAX_CNT 3
+
 enum iris_pmu_domain {
 	MIPI_PWR = (0x1 << 1),
 	MIPI2_PWR = (0x1 << 2),
@@ -96,6 +98,8 @@ int iris_pmu_frc_set(bool on);
 /* power on & off dsc unit domain */
 int iris_pmu_dscu_set(bool on);
 
+bool iris_is_pmu_dscu_on(void);
+
 int iris_pmu_hdr_set(bool on, bool chain);
 
 void iris_abyp_mode_set(int mode);
@@ -143,4 +147,8 @@ int iris_exit_abyp(bool one_wired);
 void iris_set_metadata(bool panel_lock);
 void iris_dump_status(void);
 void _iris_disable_temp_sensor(void);
+void _iris_bulksram_power_domain_proc(void);
+void iris_set_two_wire0_enable(void);
+void iris_sysfs_status_deinit(void);
+
 #endif // _DSI_IRIS_LP_H_

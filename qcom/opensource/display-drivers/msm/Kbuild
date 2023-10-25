@@ -76,8 +76,8 @@ ifeq ($(call cc-option-yn, -Wmaybe-uninitialized),y)
 EXTRA_CFLAGS += -Wmaybe-uninitialized
 endif
 
-KBUILD_EXTRA_SYMBOLS +=$(OUT)/obj/sm8550-modules/qcom/opensource/display-drivers/hdcp/Module.symvers
-KBUILD_EXTRA_SYMBOLS +=$(OUT)/obj/sm8550-modules/qcom/opensource/display-drivers/msm/Module.symvers
+KBUILD_EXTRA_SYMBOLS +=$(OUT)/obj/vendor/qcom/opensource/display-drivers/hdcp/Module.symvers
+KBUILD_EXTRA_SYMBOLS +=$(OUT)/obj/vendor/qcom/opensource/display-drivers/msm/Module.symvers
 
 ifeq ($(call cc-option-yn, -Wheader-guard),y)
 EXTRA_CFLAGS += -Wheader-guard
@@ -158,6 +158,7 @@ msm_drm-$(CONFIG_DRM_MSM_DP_USBPD_LEGACY) += dp/dp_usbpd.o
 msm_drm-$(CONFIG_DRM_OPLUS) += ../oplus/oplus_dsi_support.o \
 	../oplus/oplus_display_private_api.o \
 	../oplus/oplus_dc_diming.o \
+	../oplus/oplus_display_temp_compensation.o \
 	../oplus/oplus_onscreenfingerprint.o \
 	../oplus/oplus_ffl.o \
 	../oplus/oplus_display_panel.o \
@@ -268,4 +269,6 @@ msm_drm-$(CONFIG_DRM_MSM) += msm_atomic.o \
 			     msm_gem_vma.o \
 			     msm_smmu.o \
 			     msm_prop.o
+
+CDEFINES += -DBUILD_TIMESTAMP=\"$(shell date -u +'%Y-%m-%dT%H:%M:%SZ')\"
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021-2023 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2021-2022 Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2016-2021, The Linux Foundation. All rights reserved.
  * Copyright (C) 2013 Red Hat
  * Author: Rob Clark <robdclark@gmail.com>
@@ -252,6 +252,8 @@ enum msm_mdp_conn_property {
 #ifdef OPLUS_FEATURE_DISPLAY
 	// Prop to store sync panel backlight level
 	CONNECTOR_PROP_SYNC_BACKLIGHT_LEVEL,
+	CONNECTOR_PROP_SET_BACKLIGHT_NITS,
+	CONNECTOR_PROP_SET_DIMMING_SCALE,
 #endif /* OPLUS_FEATURE_DISPLAY */
 
 #ifdef OPLUS_FEATURE_DISPLAY_ONSCREENFINGERPRINT
@@ -859,7 +861,6 @@ struct msm_mode_info {
  * @num_ctl             number of ctl available
  * @num_3dmux           number of 3d mux available
  * @max_mixer_width:    max width supported by layer mixer
- * @merge_3d_mask:      bitmap of available 3d mux resource
  */
 struct msm_resource_caps_info {
 	uint32_t num_lm_in_use;
@@ -869,7 +870,6 @@ struct msm_resource_caps_info {
 	uint32_t num_ctl;
 	uint32_t num_3dmux;
 	uint32_t max_mixer_width;
-	unsigned long merge_3d_mask;
 };
 
 /**
@@ -1305,9 +1305,6 @@ int msm_framebuffer_set_cache_hint(struct drm_framebuffer *fb,
 		u32 flags, u32 rd_type, u32 wr_type);
 int msm_framebuffer_get_cache_hint(struct drm_framebuffer *fb,
 		u32 *flags, u32 *rd_type, u32 *wr_type);
-
-int msm_fb_obj_get_attrs(struct drm_gem_object *obj,
-		int *fb_ns, int *fb_sec, int *fb_sec_dir);
 
 struct drm_fb_helper *msm_fbdev_init(struct drm_device *dev);
 void msm_fbdev_free(struct drm_device *dev);

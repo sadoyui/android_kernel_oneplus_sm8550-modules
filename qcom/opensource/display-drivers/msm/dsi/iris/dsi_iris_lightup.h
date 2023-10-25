@@ -218,7 +218,6 @@ struct iris_cfg {
 	int osd_label;
 	int frc_label;
 	int frc_demo_window;
-	int osd_protect_mode;
 
 	/* emv info */
 	struct extmv_frc_meta emv_info;
@@ -228,6 +227,7 @@ struct iris_cfg {
 
 	/* pt_sr info*/
 	bool pt_sr_enable;
+	bool pt_sr_enable_restore;
 	int pt_sr_hsize;
 	int pt_sr_vsize;
 	int pt_sr_guided_level;
@@ -263,6 +263,7 @@ struct iris_cfg {
 #ifdef IRIS_EXT_CLK
 	bool clk_enable_flag;
 #endif
+	atomic_t iris_esd_flag;
 };
 
 struct iris_data {
@@ -283,7 +284,7 @@ int32_t iris_send_ipopt_cmds(int32_t ip, int32_t opt_id);
 void iris_update_pq_opt(uint8_t path, bool bcommit);
 void iris_update_bitmask_regval_nonread(
 		struct iris_update_regval *pregval, bool is_commit);
-
+uint32_t iris_get_regval_bitmask(int32_t ip, int32_t opt_id);
 void iris_alloc_seq_space(void);
 
 void iris_init_update_ipopt(struct iris_update_ipopt *popt,

@@ -38,6 +38,8 @@ void iris_pwil0_efifo_setting_reset(void)
 	u32 *payload = NULL;
 
 	payload = iris_get_ipopt_payload_data(IRIS_IP_PWIL, 0xf0, 4);
+	if (!payload)
+		return;
 	value = payload[0];
 	value &= ~(0x6);
 	/* update cmdlist */
@@ -50,6 +52,8 @@ void iris_pwil0_efifo_enable(bool enable)
 	u32 *payload = NULL;
 
 	payload = iris_get_ipopt_payload_data(IRIS_IP_PWIL, 0xf0, 4);
+	if (!payload)
+		return;
 	reg_val = payload[0];
 	if (enable)
 		/* set DATA_PATH_CTRL0->EFIFO_EN,EFIFO_POSITION to 0x3 */
@@ -277,8 +281,10 @@ int iris_dual_ch_ctrl_cmd_proc(u32 value)
 	case DUAL_CTRL_POWER_OFF_MIPI_1_DATA_PATH:
 		iris_mipi_1_data_path_power_on(false);
 		iris_emv_on_mipi1_down();
-		if (!pcfg->frc_enabled)
+		if (!pcfg->frc_enabled) {
 			iris_frc_lp_switch(false, false);
+			iris_pt_sr_restore();
+		}
 		break;
 	case DUAL_CTRL_SWITCH_TIMEOUT:
 		IRIS_LOGE("%s(), SWITCH TIMEOUT!", __func__);
@@ -398,7 +404,6 @@ u32 iris_kernel_status_get_cmd_proc(u32 get_op)
 {
 	u32 rc = 0;
 	struct iris_cfg *pcfg = iris_get_cfg();
-	struct dsi_display *display = get_main_display();
 
 	switch (get_op) {
 	case GET_IRIS_MIPI_CH_1_STATE:
@@ -463,12 +468,9 @@ u32 iris_kernel_status_get_cmd_proc(u32 get_op)
 		rc = iris_get_ap_timing();
 		IRIS_LOGI("GET_AP_PANEL_TIMING: %d", rc);
 		break;
-	case GET_AP_ADFR_MODE:
-		rc = -1;
-		rc = iris_emv_get_current_extend_frame();
+	case GET_IRIS_ESD_CNT:
+		rc = pcfg->lp_ctrl.esd_cnt_iris;
 		break;
-	case GET_AP_TE_TYPE:
-		rc = display->panel->vsync_switch_gpio_level;
 	default:
 		break;
 	}
@@ -716,6 +718,8 @@ static void iris_ioinc1d_config(int nInHeight, int nInWidth, int nOutWidth,
 	int h_offset = 9;
 	//ioinc1d downscaler switch
 	payload = iris_get_ipopt_payload_data(ip, 0xf0, 4);
+	if (!payload)
+		return;
 
 	m_nVinc0 = (int)(((long long)nInHeight << PREC) / (long long)nVSOutHeight);
 	m_nVSTopOffset0 = (m_nVinc0 / 2 >> PREC) + (m_VS_TAP_NUM + 1) / 2;
@@ -801,6 +805,8 @@ static void iris_update_aux_pps(void)
 	pps_buf[19] = 0x2a;
 	pps_32bit = (u32 *)pps_buf;
 	payload = iris_get_ipopt_payload_data(IRIS_IP_DSC_DEC_AUX, 0xF0, 5);
+	if (!payload)
+		return;
 	for (i = 0; i < 22; i++)
 		payload[i] = pps_32bit[i];
 
@@ -850,6 +856,8 @@ static void iris_updata_aux_setting(int width, int height)
 
 	// mipi_rx_1: ctrl
 	payload = iris_get_ipopt_payload_data(IRIS_IP_RX_2, 0xF0, 2);
+	if (!payload)
+		return;
 	payload[1] = (width-1) << 16;
 	payload[2] = (height-1) << 16;
 	payload[5] = (0x20 << 16) | (width/2);	// PPS_SLICE ?
@@ -859,12 +867,16 @@ static void iris_updata_aux_setting(int width, int height)
 
 	// osd_comp: init
 	payload = iris_get_ipopt_payload_data(IRIS_IP_OSD_COMP, 0xF0, 2);
+	if (!payload)
+		return;
 	payload[0] = (height << 16) | width;
 	iris_sync_current_ipopt(IRIS_IP_OSD_COMP, 0xF0);
 	iris_init_update_ipopt_t(IRIS_IP_OSD_COMP, 0xF0, 0xF0, 1);
 
 	// pwil_v11: init
 	payload = iris_get_ipopt_payload_data(IRIS_IP_PWIL_2, 0xF0, 2);
+	if (!payload)
+		return;
 	payload[0] &= ~(3<<9);
 	if (scale_up)
 		payload[0] |= 2<<9;
@@ -887,6 +899,8 @@ static void iris_updata_aux_setting(int width, int height)
 
 	// blending: init
 	payload = iris_get_ipopt_payload_data(IRIS_IP_BLEND, 0xF0, 2);
+	if (!payload)
+		return;
 	payload[0] &= ~(1<<23);
 	if (!scale_up)
 		payload[0] |= 1<<23;
@@ -896,6 +910,8 @@ static void iris_updata_aux_setting(int width, int height)
 
 	// pwil: ctrl 0: DATA_PATH_CTRL0, , must at end !
 	payload = iris_get_ipopt_payload_data(IRIS_IP_PWIL, 0xF0, 4);
+	if (!payload)
+		return;
 	payload[0] &= ~(3<<29);
 	if (scale_up)
 		payload[0] |= 2<<29;

@@ -60,7 +60,7 @@ static bool dpp_precsc_enable;
 #define IRIS_X_7700K			2969
 #define IRIS_X_2500K			4637
 #define IRIS_LAST_BIT_CTRL	1
-
+#define IRIS_EDR_BK			550
 static uint32_t lut_y[15] = {};
 static uint32_t lut_x[15] = {};
 static uint32_t lut_tm[5] = {};
@@ -112,6 +112,7 @@ static u32 iris_de_ftc_level[4] = {
 };
 
 u32 iris_de_default[30] = {0};
+static bool iris_first_boot = true;
 
 static u32 iris_de_disable[2] = {0x1a201e1, 0x5800};
 
@@ -304,6 +305,23 @@ struct iris_setting_info *iris_get_setting(void)
 	return &iris_setting;
 }
 
+#define eBklt_No_Change     0
+#define eBklt_Dimm_Change   1
+#define eBklt_Auto_Change_0 2 //same direction
+#define eBklt_Auto_Change_1 3 //differnt direction
+#define EDR_SCALE (1<<10)
+
+struct iris_edr {
+	u32 times;
+	u32 bkStat;
+	u32 curr_hdr;
+	u32 prev_hdr;
+	u32 curr_ratio;
+	u32 prev_ratio;
+	u32 edr_cur_nit;
+};
+struct iris_edr iris_edr_info = {0};
+
 void iris_set_HDR10_YCoCg(bool val)
 {
 	shadow_iris_HDR10_YCoCg = val;
@@ -353,6 +371,18 @@ bool iris_dspp_dirty(void)
 	return false;
 }
 
+static void iris_edr_info_init(void)
+{
+	iris_edr_info.times = 0;
+	iris_edr_info.bkStat = 0;
+	iris_edr_info.curr_hdr = 0;
+	iris_edr_info.prev_hdr = 0;
+	iris_edr_info.curr_ratio = 0;
+	iris_edr_info.prev_ratio = 0;
+	iris_edr_info.edr_cur_nit = 0;
+}
+
+
 void iris_quality_setting_off(void)
 {
 	iris_setting.quality_cur.al_bl_ratio = 0;
@@ -364,11 +394,13 @@ void iris_quality_setting_off(void)
 	} else {
 		iris_cm_color_gamut_pre_clear();
 	}
+	iris_brightness_para_reset();
 	iris_csc_para_reset();
-	iris_csc2_para_reset();
 	iris_setting.quality_cur.pq_setting.cmcolorgamut = 0;
 	iris_cm_color_gamut_set(
 			iris_setting.quality_cur.pq_setting.cmcolorgamut, true);
+	iris_csc2_para_reset();
+	iris_edr_info_init();
 
 	iris_capture_ctrl_en = false;
 	iris_skip_dma = false;
@@ -626,7 +658,6 @@ void iris_pq_parameter_init(void)
 	u32 index;
 	uint32_t *payload = NULL;
 	int i;
-	static bool iris_first_boot = true;
 
 	if (pqlt_cur_setting->pq_setting.sdr2hdr
 			== SDR2HDR_Bypass)
@@ -661,6 +692,8 @@ void iris_pq_parameter_init(void)
 		iris_first_boot = false;
 		for (i = 0; i < 14; i++) {
 			payload = iris_get_ipopt_payload_data(IRIS_IP_SDR2HDR, 0xc0 + i, 2);
+			if (!payload)
+				return;
 			iris_de_default[2 * i] = payload[0];
 			iris_de_default[2 * i + 1] = payload[9];
 		}
@@ -693,6 +726,12 @@ void iris_cm_ratio_set(void)
 		coefBuffIndex = 2;
 	else if (pqlt_cur_setting->pq_setting.cmcolorgamut >= 10 &&  pqlt_cur_setting->pq_setting.cmcolorgamut <= 11)
 		coefBuffIndex -= 3; //10-->7. 11-->8;
+	else if (pqlt_cur_setting->pq_setting.cmcolorgamut >= 16 &&  pqlt_cur_setting->pq_setting.cmcolorgamut <= 18)
+		coefBuffIndex = 4;
+	else if (pqlt_cur_setting->pq_setting.cmcolorgamut >= 19 &&  pqlt_cur_setting->pq_setting.cmcolorgamut <= 20)
+		coefBuffIndex -= 10;   //19-->9, 20-->10
+	else
+		coefBuffIndex = 1;	//native
 
 	if (coefBuffIndex < 0) {
 		IRIS_LOGE("invalid coefBuffIndex %d", coefBuffIndex);
@@ -839,6 +878,8 @@ void iris_cm_ratio_set(void)
 			iris_init_update_ipopt_t(IRIS_IP_DPP, 0x33, 0x33, 0x01);
 
 			payload = iris_get_ipopt_payload_data(IRIS_IP_DPP, 0xc0, 2);
+			if (!payload)
+				return;
 			for (i = 0; i < 3; i++)
 				payload[i] = dwCSC2CoffValue[i + 9];
 			iris_init_update_ipopt_t(IRIS_IP_DPP, 0xc0, 0xc0, 0x01);
@@ -852,6 +893,8 @@ void iris_cm_ratio_set(void)
 			iris_init_update_ipopt_t(IRIS_IP_DPP, 0x33, 0x33, 0x01);
 
 			payload = iris_get_ipopt_payload_data(IRIS_IP_DPP, 0xc0, 2);
+			if (!payload)
+				return;
 			for (i = 0; i < 3; i++)
 				payload[i] = 0;
 			iris_init_update_ipopt_t(IRIS_IP_DPP, 0xc0, 0xc0, 0x01);
@@ -962,6 +1005,8 @@ void iris_dpp_apl_enable(bool enable, uint8_t chain)
 	uint32_t csc_coef_ctrl = 0;
 	//enable/disable apl_ctrl
 	payload = iris_get_ipopt_payload_data(IRIS_IP_DPP, 0x21, 2);
+	if (!payload)
+		return;
 	apl_ctrl = payload[0] & 0xffffffcc;
 	if (enable)
 		apl_ctrl = apl_ctrl | 0x3 << 4 | 0x3;
@@ -970,6 +1015,8 @@ void iris_dpp_apl_enable(bool enable, uint8_t chain)
 
 	//csc_coef_ctrl, CSC2_COEF_UPDATE_EN = 1 to enable
 	payload = iris_get_ipopt_payload_data(IRIS_IP_DPP, 0x31, 2);
+	if (!payload)
+		return;
 	csc_coef_ctrl = payload[0] & 0xfffffffe;
 	//if (enable)
 	//	csc_coef_ctrl = csc_coef_ctrl | 0x1;
@@ -986,15 +1033,21 @@ void iris_dpp_3dlut_gain(u32 count, u32 *values, bool bcommit)
 
 	if (count == 1) {
 		payload = iris_get_ipopt_payload_data(IRIS_IP_DPP, 0x52, 2);
+		if (!payload)
+			return;
 		lut3d_interp3 = payload[0] & 0xffff0000;
 		lut3d_interp3 = lut3d_interp3 | values[0];
 		iris_set_ipopt_payload_data(IRIS_IP_DPP, 0x52, 2, lut3d_interp3);
 	} else if (count == 2) {
 		payload = iris_get_ipopt_payload_data(IRIS_IP_DPP, 0x52, 2);
+		if (!payload)
+			return;
 		lut3d_interp3 = (values[1] << 16) | values[0];
 		iris_set_ipopt_payload_data(IRIS_IP_DPP, 0x52, 2, lut3d_interp3);
 	} else if (count == 3) {
 		payload = iris_get_ipopt_payload_data(IRIS_IP_DPP, 0x52, 3);
+		if (!payload)
+			return;
 		lut3d_interp3 = (values[1] << 16) | values[0];
 		iris_set_ipopt_payload_data(IRIS_IP_DPP, 0x52, 2, lut3d_interp3);
 		lut3d_interp3 = payload[0] & 0xffff0000;
@@ -1002,6 +1055,8 @@ void iris_dpp_3dlut_gain(u32 count, u32 *values, bool bcommit)
 		iris_set_ipopt_payload_data(IRIS_IP_DPP, 0x52, 3, lut3d_interp3);
 	} else if (count == 4) {
 		payload = iris_get_ipopt_payload_data(IRIS_IP_DPP, 0x52, 2);
+		if (!payload)
+			return;
 		lut3d_interp3 = (values[1] << 16) | values[0];
 		iris_set_ipopt_payload_data(IRIS_IP_DPP, 0x52, 2, lut3d_interp3);
 		lut3d_interp3 = (values[3] << 16) | values[2];
@@ -1035,7 +1090,7 @@ void iris_cm_color_gamut_set(u32 level, bool bcommit)
 	uint32_t currentmode;
 	bool apl = 0;
 	uint32_t lut3d_interp1, lut3d_interp2;
-	uint32_t interp1_src, interp1_src2;
+	uint32_t interp1_src = 0, interp1_src2;
 	uint32_t interp2_src, interp2_src2;
 	uint32_t interp1_dst, interp2_dst;
 	uint32_t interp3_src, interp3_src2, interp3_dst;
@@ -1058,6 +1113,8 @@ void iris_cm_color_gamut_set(u32 level, bool bcommit)
 	iris_init_update_ipopt_t(IRIS_IP_DPP, 0x50, 0x50, 0x01);
 
 	payload = iris_get_ipopt_payload_data(IRIS_IP_DPP, 0x51, 2);
+	if (!payload)
+		return;
 
 #ifdef TABLE_ITSELF  //interpolation with itself
 	if (level > 0 && level < 6) {
@@ -1166,11 +1223,56 @@ void iris_cm_color_gamut_set(u32 level, bool bcommit)
 		lut3d_interp1 = (payload[0] & 0xc0000000) | lut3d_interp1;
 		lut3d_interp2 = (payload[1] & 0xffff8000) | lut3d_interp2;
 	break;
-
-	default:
-		lut3d_interp1 = 0;
-		lut3d_interp2 = 0;
+	case 16: //4/5 -> 2, 6/6 -> 3, 3/2 -> 0
+		interp1_src = 0x4; interp1_src2 = 0x5; interp1_dst = 0x2;
+		lut3d_interp1 =  ((interp1_src << 10) | (interp1_src2 << 6) | (interp1_dst << 2) | 1);
+		interp2_src = 0x6; interp2_src2 = 0x6; interp2_dst = 0x3;
+		lut3d_interp1 |= ((interp2_src << 25) | (interp2_src2 << 21) | (interp2_dst << 17) | (1 << 15));
+		interp3_src = 0x3; interp3_src2 = 0x2; interp3_dst = 0;
+		lut3d_interp2 = ((interp3_src << 10) | (interp3_src2 << 6) | 1);
 		lut3d_interp1 = (payload[0] & 0xc0000000) | lut3d_interp1;
+		lut3d_interp2 = (payload[1] & 0xffff8000) | lut3d_interp2;
+	break;
+	case 17: //4/5 -> 2, 10/11 -> 3, 3/2 -> 0
+		interp1_src = 0x4; interp1_src2 = 0x5; interp1_dst = 0x2;
+		lut3d_interp1 =  ((interp1_src << 10) | (interp1_src2 << 6) | (interp1_dst << 2) | 1);
+		interp2_src = 0xa; interp2_src2 = 0xb; interp2_dst = 0x3;
+		lut3d_interp1 |= ((interp2_src << 25) | (interp2_src2 << 21) | (interp2_dst << 17) | (1 << 15));
+		interp3_src = 0x3; interp3_src2 = 0x2; interp3_dst = 0;
+		lut3d_interp2 = ((interp3_src << 10) | (interp3_src2 << 6) | 1);
+		lut3d_interp1 = (payload[0] & 0xc0000000) | lut3d_interp1;
+		lut3d_interp2 = (payload[1] & 0xffff8000) | lut3d_interp2;
+	break;
+	case 18: //4/5 -> 2, 12/13 -> 3, 3/2 -> 0
+		interp1_src = 0x4; interp1_src2 = 0x5; interp1_dst = 0x2;
+		lut3d_interp1 =  ((interp1_src << 10) | (interp1_src2 << 6) | (interp1_dst << 2) | 1);
+		interp2_src = 0xc; interp2_src2 = 0xd; interp2_dst = 0x3;
+		lut3d_interp1 |= ((interp2_src << 25) | (interp2_src2 << 21) | (interp2_dst << 17) | (1 << 15));
+		interp3_src = 0x3; interp3_src2 = 0x2; interp3_dst = 0;
+		lut3d_interp2 = ((interp3_src << 10) | (interp3_src2 << 6) | 1);
+		lut3d_interp1 = (payload[0] & 0xc0000000) | lut3d_interp1;
+		lut3d_interp2 = (payload[1] & 0xffff8000) | lut3d_interp2;
+	break;
+	case 19: //1/1 -> 0
+		interp1_src = 0x01;
+		lut3d_interp1 = ((interp1_src << 10) | (interp1_src << 6) | 1);
+		lut3d_interp1 = (payload[0] & 0xc0000000) | lut3d_interp1;
+		lut3d_interp2 = 0;
+		lut3d_interp2 = (payload[1] & 0xffff8000) | lut3d_interp2;
+	break;
+	case 20: //8/8-> 0
+		interp1_src = 0x08;
+		lut3d_interp1 = ((interp1_src << 10) | (interp1_src << 6) | 1);
+		lut3d_interp1 = (payload[0] & 0xc0000000) | lut3d_interp1;
+		lut3d_interp2 = 0;
+		lut3d_interp2 = (payload[1] & 0xffff8000) | lut3d_interp2;
+	break;
+
+	default:	//set defalut mode as native mode
+		interp1_src = 9;
+		lut3d_interp1 = ((interp1_src << 10) | (interp1_src << 6) | 1);
+		lut3d_interp1 = (payload[0] & 0xc0000000) | lut3d_interp1;
+		lut3d_interp2 = 0;
 		lut3d_interp2 = (payload[1] & 0xffff8000) | lut3d_interp2;
 	break;
 	}
@@ -1179,39 +1281,30 @@ void iris_cm_color_gamut_set(u32 level, bool bcommit)
 #endif
 	iris_init_update_ipopt_t(IRIS_IP_DPP, 0x51, 0x51, 0x01);
 
-	apl = (aplstatus_value & (0x1 << level)) ? 1 : 0;
+	apl = (aplstatus_value & (0x1 << interp1_src)) ? 1 : 0;
 	payload = iris_get_ipopt_payload_data(IRIS_IP_DPP, 0x20, 2);
+	if (!payload)
+		return;
 	currentmode = payload[0] & 0x7;
 	if (apl == 0) {
 		gammactrl = payload[0] & 0xff0; //65bin gamma
-		gammalevel = 0x00 + level;
-
-//#if 1
-//level 7/8/9: -->interpolation <vivid no cam, vivid high cam, native, use vivid's gamma now.>
-//level 10/11: vivid low brightness <also use vivid's gamma now>
-//may be changed later again.
-		if (level >= 7)
-			gammalevel = 0x00 + 2;
-//#endif
+		gammalevel = 0x00 + interp1_src;
 	} else {
 		gammamode = 2; //17bin gamma
 		gammactrl = ((payload[0] & 0xff0) | gammamode | (0x1 << 3));
 		//gammalevel = 0x20+level;
-		gammalevel = 0xa0 + level;
+		gammalevel = 0xa0 + interp1_src;
 	}
 
 	IRIS_LOGD("aplstauts: 0x%x, gammamctrl: %d, gammalevel: 0x%x", aplstatus_value, gammactrl, gammalevel);
 	iris_set_ipopt_payload_data(IRIS_IP_DPP, 0x20, 2, gammactrl);
 	iris_init_update_ipopt_t(IRIS_IP_DPP, 0x20, 0x20, 0x01);
-	iris_dpp_apl_enable(apl, 0x01);
+	iris_dpp_apl_enable(true, 0x01);
 	iris_update_ip_opt(GAMMA_LUT, gammalevel, 0x01);
 
 	iris_cm_ratio_set();
 
-	if ((level >= 7 && level <= 9) || (level >= 12 && level <= 15))
-		iris_update_ip_opt(DPP_PRE_LUT, 0x2, 0x1);
-	else
-		iris_update_ip_opt(DPP_PRE_LUT, level, 0x1);
+	iris_update_ip_opt(DPP_PRE_LUT, interp1_src, 0x1);
 	if (bcommit)
 		iris_end_dpp(true);
 	IRIS_LOGI("cm color gamut=%d", level);
@@ -1295,12 +1388,17 @@ void iris_dpp_precsc_enable(u32 enable, bool bcommit)
 	uint32_t csc_ctrl = 0;
 
 	payload = iris_get_ipopt_payload_data(IRIS_IP_DPP, 0x30, 2);
+	if (!payload)
+		return;
+
 	csc_ctrl = payload[0] & 0xdeff;
 	if (enable)
 		csc_ctrl = csc_ctrl | 0x1 << 8;
 	iris_set_ipopt_payload_data(IRIS_IP_DPP, 0x30, 2, csc_ctrl);
 	iris_init_update_ipopt_t(IRIS_IP_DPP, 0x30, 0x30, 0x01);
 	payload = iris_get_ipopt_payload_data(IRIS_IP_DPP, 0x30, 2);
+	if (!payload)
+		return;
 
 	if (bcommit)
 		iris_end_dpp(true);
@@ -1332,6 +1430,8 @@ void iris_dpp_gammamode_set(u32 gammamode, u32 gammaIndex)
 	uint32_t gammactrl = 0;
 
 	payload = iris_get_ipopt_payload_data(IRIS_IP_DPP, 0x20, 2);
+	if (!payload)
+		return;
 	currentmode = payload[0] & 0x7;
 
 	if ((gammamode == 0) && (currentmode != gammamode)) {
@@ -1373,6 +1473,8 @@ void iris_dpp_demo_window_set(u8 enable, u8 owAndGamma, u32 xWindow, u32 yWindow
 	//len = iris_start_demo();
 	// RESERVED
 	payload = iris_get_ipopt_payload_data(IRIS_IP_DPP, 0x64, 4);
+	if (!payload)
+		return;
 	IRIS_LOGD("DPP< 0xE0, pos 4, 0x%x", payload[0]);
 	// payload[0]: WND_CTRL
 	//bit0: WND_EN,  bit1: out_en; bit 2: gamma_en;
@@ -1421,6 +1523,8 @@ void iris_dpp_fingerDisplay_set(u8 enable, u8 shapeInFill, u32 radius_a, u32 rad
 
 	// RESERVED
 	payload = iris_get_ipopt_payload_data(IRIS_IP_DPP, 0x62, 2);
+	if (!payload)
+		return;
 	// payload[0]: eclipse A/B, [1]: eclipse C/D, [2]: fill center, [3]: fillcolor
 	IRIS_LOGD("dpp, 0x62, radius0: 0x%x", payload[0]);
 	regvalue = ((radius_a & 0x3ff) | ((radius_b & 0x3ff) << 16));
@@ -1453,6 +1557,184 @@ void iris_dpp_fingerDisplay_set(u8 enable, u8 shapeInFill, u32 radius_a, u32 rad
 
 	iris_end_dpp(true);
 }
+
+u32 iris_EDR_backlight_status(struct iris_edr *edr)
+{
+	u32 curr_sdr = (u32)(edr->curr_hdr*10000 / edr->curr_ratio);
+	u32 prev_sdr = (u32)(edr->prev_hdr*10000 / edr->prev_ratio);
+	u32 curr_hdr = edr->curr_hdr;
+	u32 prev_hdr = edr->prev_hdr;
+
+	if (edr->times > 0) {
+		if (curr_sdr != prev_sdr) {
+			int hdr_diff = curr_hdr - prev_hdr;
+			int sdr_diff = curr_sdr - prev_sdr;
+			int diff_ratio = (int)(hdr_diff * 100000 / sdr_diff);
+
+			if (diff_ratio >= 0)
+				edr->bkStat =  eBklt_Auto_Change_0;
+			else
+				edr->bkStat =  eBklt_Auto_Change_1;
+		} else {
+			if (curr_hdr != prev_hdr)
+				edr->bkStat = eBklt_Dimm_Change;
+			else if (curr_hdr == prev_hdr)
+				edr->bkStat = eBklt_No_Change;
+		}
+	} else
+		edr->bkStat = eBklt_No_Change;
+
+	return 0;
+}
+
+static u32 validate_hdr_scale(u64 hdr_nit, u64 ratio_panel, u32 edr_ratio)
+{
+	u64 hdr_nit_new = hdr_nit * 10000;
+	u32 actual_ratio = 1 * 10000;
+
+	switch (edr_ratio) {
+		case 0x3:
+			if (hdr_nit_new >= 0 && hdr_nit_new <= 60 * 10000) {
+				if (ratio_panel > 2 * 10000)
+					ratio_panel = 2 * 10000;
+			} else if (hdr_nit_new > 60 * 10000 && hdr_nit_new <= 450 * 10000) {
+				actual_ratio = (hdr_nit_new * 10000) / ((4 * hdr_nit_new + 150 * 10000) / 13);
+				if (ratio_panel > actual_ratio)
+					ratio_panel = actual_ratio;
+			} else if (hdr_nit_new > 450 * 10000 && hdr_nit_new <= IRIS_EDR_BK * 10000) {
+				actual_ratio = (hdr_nit_new * 10000) / ((4 * hdr_nit_new - 1650 * 10000) / 4);
+				if (ratio_panel > actual_ratio)
+					ratio_panel = actual_ratio;
+			} else
+				ratio_panel = 10000;
+			break;
+		case 0x2:
+			if (hdr_nit_new >= 0 && hdr_nit_new <= 60 * 10000) {
+				if (ratio_panel > 2 * 10000)
+					ratio_panel = 2 * 10000;
+			} else if (hdr_nit_new > 60 * 10000 && hdr_nit_new <= 375 * 10000) {
+				actual_ratio = (hdr_nit_new * 10000) / ((8 * hdr_nit_new + 150 * 10000) / 21);
+				if (ratio_panel > actual_ratio)
+					ratio_panel = actual_ratio;
+			} else if (hdr_nit_new > 375 * 10000 && hdr_nit_new <= IRIS_EDR_BK * 10000) {
+				actual_ratio = (hdr_nit_new * 10000) / ((16 * hdr_nit_new - 4950 * 10000) / 7);
+				if (ratio_panel > actual_ratio)
+					ratio_panel = actual_ratio;
+			} else
+				ratio_panel = 10000;
+			break;
+		case 0x1:
+		default:
+			if (hdr_nit_new >= 0 && hdr_nit_new <= 60 * 10000) {
+				if (ratio_panel > 2 * 10000)
+					ratio_panel = 2 * 10000;
+			} else if (hdr_nit_new > 60 * 10000 && hdr_nit_new <= 300 * 10000) {
+				if (ratio_panel > 2 * 10000)
+					actual_ratio = 2 * 10000;
+			} else if (hdr_nit_new > 300 * 10000 && hdr_nit_new <= IRIS_EDR_BK * 10000) {
+				actual_ratio = (hdr_nit_new * 10000) / ((8 * hdr_nit_new - 1650 * 10000) / 5);
+				if (ratio_panel > actual_ratio)
+					ratio_panel = actual_ratio;
+			} else
+				ratio_panel = 10000;
+			break;
+	}
+	IRIS_LOGI("validate_hdr_scale edr_ratio %u ratio_panel %u", edr_ratio, ratio_panel);
+	return ratio_panel;
+}
+
+int iris_sdr_to_edr_nits(u32 ratio_panel_new)
+{
+	u32 edr_nit = 0;
+	struct quality_setting *pqlt_cur_setting = &iris_setting.quality_cur;
+	u32 backlight_ratio = pqlt_cur_setting->pq_setting.edr_ratio;
+	switch (backlight_ratio) {
+		case 0x3:
+			edr_nit = 1650 * 10000 / (ratio_panel_new - 1 * 10000);
+			break;
+		case 0x2:
+			edr_nit = 4950 * 10000 / (16 * ratio_panel_new - 7 * 10000);
+			break;
+		case 0x1:
+		default:
+			edr_nit = 1650 * 10000 / (8 * ratio_panel_new - 5 * 10000);
+			break;
+	}
+	return edr_nit;
+}
+
+static void iris_edr_datapath(bool enable)
+{
+	uint32_t  *payload = NULL;
+
+	payload = iris_get_ipopt_payload_data(IRIS_IP_PWIL, 0xf0, 4);
+	if (!payload)
+		return;
+	payload[0] = ((payload[0] & ~0x00000008) | (enable << 3));
+	iris_set_ipopt_payload_data(IRIS_IP_PWIL, 0xf0, 4, payload[0]);
+	iris_init_update_ipopt_t(IRIS_IP_PWIL, 0xf0, 0xf0, 0x1);
+	iris_end_pwil(true);
+	//iris_pmu_hdr_set(false, false);
+}
+static bool edr_state = false;
+/*ratio x 1024*/
+void iris_EDR_backlight_ctrl(u32 hdr_nit, u32 ratio_panel)
+{
+	u64 edr_cur_nit = 0;
+	u64 ratio_panel_new = 10000;
+	struct iris_edr *edr = &iris_edr_info;
+	struct iris_setting_info *iris_setting = iris_get_setting();
+	struct quality_setting *pqlt_cur_setting = &iris_setting->quality_cur;
+	u32 edr_ratio = pqlt_cur_setting->pq_setting.edr_ratio;
+	struct iris_cfg *pcfg = iris_get_cfg();
+
+	if (!pcfg || !pcfg->panel) {
+		IRIS_LOGE("pcfg or pcfg->panel is NULL!");
+		return;
+	}
+	if (ratio_panel < 10000) {
+		IRIS_LOGE("ratio_panel need >= 10000");
+		return;
+	}
+	IRIS_LOGI("iris_EDR_backlight_ctrl hdr_nit %u scale %u", hdr_nit, ratio_panel);
+
+	ratio_panel_new = validate_hdr_scale(hdr_nit, ratio_panel, edr_ratio);
+	if (hdr_nit < IRIS_EDR_BK) {
+		edr_cur_nit = iris_sdr_to_edr_nits(ratio_panel_new);
+	} else {
+		edr_cur_nit = IRIS_EDR_BK;
+	}
+	edr->prev_hdr = edr->curr_hdr;
+	edr->curr_hdr = hdr_nit;
+	edr->prev_ratio = edr->curr_ratio;
+	edr->curr_ratio = ratio_panel_new;
+	edr->edr_cur_nit = edr_cur_nit;
+	iris_EDR_backlight_status(edr);
+
+	if (edr_state && ratio_panel_new == 10000) {
+		mutex_lock(&pcfg->panel->panel_lock);
+		iris_edr_datapath(false);
+		mutex_unlock(&pcfg->panel->panel_lock);
+		edr_state = false;
+		edr->times = 0;
+		edr->edr_cur_nit = 0;
+		return;
+	} else if (ratio_panel_new == 10000 && !edr_state)
+		return;
+
+	if (pqlt_cur_setting->pq_setting.sdr2hdr == SDR2HDR_9) {
+		mutex_lock(&pcfg->panel->panel_lock);
+		if (!edr_state && ratio_panel_new > 10000) {
+			iris_edr_datapath(true);
+			edr_state = true;
+		}
+		iris_hdr_ai_input_bl(edr_cur_nit, true);
+		IRIS_LOGD("iris_hdr_ai_input_bl edr_cur_nit %d", edr_cur_nit);
+		edr->times++;
+		mutex_unlock(&pcfg->panel->panel_lock);
+	}
+}
+
 
 void iris_dpp_fadeinout_enable(u8 enable)
 {
@@ -1542,6 +1824,8 @@ static void iris_hdr_datapath_set(void)
 		power_level = HDR_POWER_ON;
 
 	payload = iris_get_ipopt_payload_data(IRIS_IP_PWIL, 0xf0, 4);
+	if (!payload)
+		return;
 	payload[0] = ((payload[0] & ~0x00000008) | (power_level << 3));
 	iris_set_ipopt_payload_data(IRIS_IP_PWIL, 0xf0, 4, payload[0]);
 	iris_init_update_ipopt_t(IRIS_IP_PWIL, 0xf0, 0xf0, 0x01);
@@ -1574,6 +1858,8 @@ void iris_aux_channel_lux_set(u32 level)
 
 	level = level >> 1;
 	payload = iris_get_ipopt_payload_data(IRIS_IP_BLEND, 0x90, 9);
+	if (!payload)
+		return;
 	payload[0] = (payload[0] & ~0x0ffff000) | (level << 12);
 
 	iris_update_ip_opt(IRIS_IP_BLEND, 0x90, 1);
@@ -1589,6 +1875,8 @@ void iris_al_enable(bool enable)
 	uint32_t  *payload2 = NULL;
 
 	payload = iris_get_ipopt_payload_data(IRIS_IP_SDR2HDR, pqlt_cur_setting->pq_setting.sdr2hdr, 2);
+	if (!payload)
+		return;
 	payload2 = iris_get_ipopt_payload_data(IRIS_IP_BLEND, 0x90, 2);
 
 	payload2[0] &= ~0x00000001;
@@ -1666,6 +1954,8 @@ void iris_sdr2hdr_lut_set(u32 level)
 		iris_update_ip_opt(SDR2HDR_LUT, lut_level, 0x01);
 	}
 	payload = iris_get_ipopt_payload_data(IRIS_IP_SDR2HDR, level, 3);
+	if (!payload)
+		return;
 	if (iris_sdr2hdr_lut_index == 0)
 		payload[0] &= ~mask;
 	else
@@ -1681,6 +1971,8 @@ void iris_sdr2hdr_ai_enable(bool enable, bool update)
 	if (update)
 		last = 0;
 	payload = iris_get_ipopt_payload_data(IRIS_IP_AI, 0x10, 2);
+	if (!payload)
+		return;
 	payload[0] &= ~0x40000000;
 	if (enable == true)
 		payload[0] |= 0x40000000;
@@ -1699,6 +1991,8 @@ void iris_sdr2hdr_allow(bool enable)
 		return;
 
 	payload = iris_get_ipopt_payload_data(IRIS_IP_SDR2HDR, pqlt_cur_setting->pq_setting.sdr2hdr, 2);
+	if (!payload)
+		return;
 	payload[0] &= ~0x00000001;
 	if (enable == false)
 		payload[0] |= 0x00000001;
@@ -1714,6 +2008,8 @@ static void iris_blending_lut_enable(bool enable)
 	uint32_t  *payload2 = NULL;
 
 	payload = iris_get_ipopt_payload_data(IRIS_IP_BLEND, 0x60, 2);
+	if (!payload)
+		return;
 	payload2 = iris_get_ipopt_payload_data(IRIS_IP_BLEND, 0x50, 2);
 	payload[0] &= ~0x00000001;
 	payload[1] &= ~0x00000001;
@@ -1738,6 +2034,8 @@ void iris_pwil_dport_disable(bool enable, u32 value)
 	cmd[3] = 0x00000100;
 
 	iris_ocp_write_mult_vals(4, cmd);
+
+	IRIS_LOGD("%s, pwil_dport_disable = %d, count = %d", __func__, enable, value);
 }
 
 void iris_sdr2hdr_hdr_en(void)
@@ -1748,6 +2046,8 @@ void iris_sdr2hdr_hdr_en(void)
 	bool update = true;
 
 	payload = iris_get_ipopt_payload_data(IRIS_IP_SDR2HDR, pqlt_cur_setting->pq_setting.sdr2hdr, 2);
+	if (!payload)
+		return;
 
 	if (pqlt_cur_setting->pq_setting.sdr2hdr >= 9 && sdr2hdr_level_orig < 9) {
 		payload[0] |= 0x00000200;
@@ -1787,6 +2087,8 @@ void iris_sdr2hdr_hdr_en(void)
 
 	if (pqlt_cur_setting->pq_setting.sdr2hdr != SDR2HDR_Bypass) {
 		payload = iris_get_ipopt_payload_data(IRIS_IP_SDR2HDR, pqlt_cur_setting->pq_setting.sdr2hdr, 2);
+		if (!payload)
+			return;
 		payload[2] = 0x00000800;
 		iris_init_update_ipopt_t(IRIS_IP_SDR2HDR, pqlt_cur_setting->pq_setting.sdr2hdr,
 			pqlt_cur_setting->pq_setting.sdr2hdr, 0);
@@ -1856,6 +2158,8 @@ void iris_sdr2hdr_level_set(u32 level)
 
 	if (level != SDR2HDR_Bypass) {
 		payload = iris_get_ipopt_payload_data(IRIS_IP_SDR2HDR, 0xc0 + level, 2);
+		if (!payload)
+			return;
 		if (pcfg->pt_sr_enable == false) {
 			payload[0] = iris_de_default[level * 2];
 			payload[9] = iris_de_default[level * 2 + 1];
@@ -1863,7 +2167,6 @@ void iris_sdr2hdr_level_set(u32 level)
 			payload[0] = iris_de_disable[0];
 			payload[9] = iris_de_disable[1];
 		}
-
 		iris_update_ip_opt(IRIS_IP_SDR2HDR, 0x10 + level, 0x01);
 
 		iris_init_update_ipopt_t(IRIS_IP_SDR2HDR,
@@ -1893,9 +2196,16 @@ void iris_sdr2hdr_level_set(u32 level)
 
 		iris_update_ip_opt(IRIS_IP_SDR2HDR_2, 0x20 + level, 0x01);
 
-		iris_ai_bl_al_enable(pqlt_cur_setting->ai_auto_en, false);
+		if (level == SDR2HDR_9) {
+			iris_hdr_ai_input_bl((iris_edr_info.edr_cur_nit) ?
+					(iris_edr_info.edr_cur_nit) : IRIS_EDR_BK, false);
+			iris_edr_info_init();
+		} else
+			iris_ai_bl_al_enable(pqlt_cur_setting->ai_auto_en, false);
 
 		payload = iris_get_ipopt_payload_data(IRIS_IP_SDR2HDR, level, 2);
+		if (!payload)
+			return;
 		payload[2] = 0xFFFFFBFF;
 		if (iris_ai_lce_disable == true) {
 			lce_sel_restore = payload[0] & 0x00001800;
@@ -1913,21 +2223,31 @@ void iris_sdr2hdr_level_set(u32 level)
 
 		if (level == HDR10 && pcfg->tx_mode == 0) {
 			payload = iris_get_ipopt_payload_data(IRIS_IP_SDR2HDR, level, 2);
+			if (!payload)
+				return;
 			payload[0] &= ~0x00000300;
 		} else if (level > HDR10 && sdr2hdr_level_orig <= HDR10) {
 			payload = iris_get_ipopt_payload_data(IRIS_IP_SDR2HDR, level, 2);
+			if (!payload)
+				return;
 			lce_sel = payload[0] & 0x00001820;
 			payload[0] &= ~0x00001820;
 		}
 
 		if (level >= 9 && sdr2hdr_level_orig < 9) {
 			payload = iris_get_ipopt_payload_data(IRIS_IP_SDR2HDR, level, 2);
+			if (!payload)
+				return;
 			payload[0] &= ~0x00000300;
 		}
 	} else {
+		iris_edr_info_init();
 		payload = iris_get_ipopt_payload_data(IRIS_IP_SDR2HDR, sdr2hdr_level_orig, 2);
+		if (!payload)
+			return;
 		iris_set_ipopt_payload_data(IRIS_IP_SDR2HDR, level, 2, (payload[0] | 0x00000001));
 		iris_set_ipopt_payload_data(IRIS_IP_SDR2HDR, level, 4, 0xFFFFFBFF);
+		iris_set_ipopt_payload_data(IRIS_IP_SDR2HDR, level, 6, payload[4]);
 		iris_update_ip_opt(IRIS_IP_SDR2HDR, 0xd0 + level, 0x01);
 	}
 
@@ -2006,6 +2326,8 @@ static void _iris_sdr2hdr_update_demo_win2(u32 win_x, u32 win_y)
 	y2_2 = y2 * hdr_img_size[3] / hdr_img_size[1];
 
 	payload = iris_get_ipopt_payload_data(IRIS_IP_SDR2HDR_2, cur_level + 0x40, 2);
+	if (!payload)
+		return;
 
 	IRIS_LOGI("%s(), current WND_X_2 0x%08X, WND_Y_2 0x%08X", __func__, payload[0], payload[1]);
 	payload[0] = BITS_SET(x1_2 & BITS_MSK(12), 12, 16, x2_2);
@@ -2034,6 +2356,8 @@ void iris_sdr2hdr_set_demo_win(u8 demo_en, u8 win_out, u32 win_x, u32 win_y)
 
 	/* set DEMO_EN(bit5) and WND_OUT_EN(bit28) */
 	payload = iris_get_ipopt_payload_data(IRIS_IP_SDR2HDR, cur_level + 0x00, 2);
+	if (!payload)
+		return;
 	reg_val = payload[0];
 
 	IRIS_LOGI("%s(), current HDR_CTRL 0x%08X", __func__, reg_val);
@@ -2047,6 +2371,8 @@ void iris_sdr2hdr_set_demo_win(u8 demo_en, u8 win_out, u32 win_x, u32 win_y)
 
 	/* set WND_X and WND_Y */
 	payload = iris_get_ipopt_payload_data(IRIS_IP_SDR2HDR_2, cur_level + 0x30, 2);
+	if (!payload)
+		return;
 
 	IRIS_LOGI("%s(), current WND_X 0x%08X, WND_Y 0x%08X", __func__, payload[0], payload[1]);
 	payload[0] = win_x;
@@ -2094,6 +2420,8 @@ void iris_sdr2hdr_update_size2(uint32_t img_width, uint32_t img_height)
 	/* for TOP win, HDR_IMG_SIZE_2, FILM_ROW_2, FILM_COL_2, TM_VAL_NUM_RATIO_2 */
 	{
 		payload = iris_get_ipopt_payload_data(IRIS_IP_SDR2HDR, 0x30, 2);
+		if (!payload)
+			return;
 
 		reg_val = img_width & BITS_MSK(14);
 		payload[0] = BITS_SET(reg_val, 14, 16, img_height);
@@ -2202,6 +2530,8 @@ void iris_sdr2hdr_set_lce(u32 value)
 
 	if (value > 0) {
 		payload = iris_get_ipopt_payload_data(IRIS_IP_SDR2HDR, option, 3);
+		if (!payload)
+			return;
 		payload[6] = (payload[0] & 0xff00ffff) | (iris_lce_level[0][value-1] << 16);
 
 		payload[17] = iris_lce_level[1][value-1];
@@ -2226,6 +2556,8 @@ void iris_sdr2hdr_set_lce(u32 value)
 		iris_init_update_ipopt_t(IRIS_IP_SDR2HDR, option, option, 0x01);
 	}
 	payload = iris_get_ipopt_payload_data(IRIS_IP_SDR2HDR, pqlt_cur_setting->pq_setting.sdr2hdr, 2);
+	if (!payload)
+		return;
 	if (value == 0)
 		payload[0] &= 0xffffe7ff;
 	else
@@ -2250,6 +2582,8 @@ void iris_sdr2hdr_set_de(u32 value)
 
 	if (value > 0) {
 		payload = iris_get_ipopt_payload_data(IRIS_IP_SDR2HDR, option, 3);
+		if (!payload)
+		return;
 		payload[0] = iris_de_level[0][value-1] + (iris_de_level[1][value-1] << 10)
 			+ (iris_de_level[2][value-1] << 20);
 		payload[1] = (payload[1] & 0xfff00000) + iris_de_level[3][value-1]
@@ -2258,6 +2592,8 @@ void iris_sdr2hdr_set_de(u32 value)
 	}
 
 	payload = iris_get_ipopt_payload_data(IRIS_IP_SDR2HDR, pqlt_cur_setting->pq_setting.sdr2hdr, 2);
+	if (!payload)
+		return;
 	if (value == 0)
 		payload[0] &= 0xffffffdf;
 	else
@@ -2292,6 +2628,8 @@ void iris_sdr2hdr_set_tf_coef(u32 value)
 
 	/* for LCE_TF_COEF */
 	payload = iris_get_ipopt_payload_data(IRIS_IP_SDR2HDR, cur_level + 0x50, 2);
+	if (!payload)
+		return;
 	reg_val = payload[13];
 	if (save_coef)
 		hdr_tf_coef[0] = BITS_GET(reg_val, 11, 15);
@@ -2301,6 +2639,8 @@ void iris_sdr2hdr_set_tf_coef(u32 value)
 
 	/* for DLV_TF_COEF */
 	payload = iris_get_ipopt_payload_data(IRIS_IP_SDR2HDR, cur_level + 0x60, 2);
+	if (!payload)
+		return;
 	if (save_coef)
 		hdr_tf_coef[1] = payload[4] & BITS_MSK(11);
 	payload[4] = tf_coef[1] & BITS_MSK(11);
@@ -2309,6 +2649,8 @@ void iris_sdr2hdr_set_tf_coef(u32 value)
 
 	/* for TM_TF_COEF */
 	payload = iris_get_ipopt_payload_data(IRIS_IP_SDR2HDR_2, cur_level + 0x10, 2);
+	if (!payload)
+		return;
 	if (save_coef)
 		hdr_tf_coef[2] = payload[31] & BITS_MSK(11);
 	payload[31] = tf_coef[2] & BITS_MSK(11);
@@ -2317,6 +2659,8 @@ void iris_sdr2hdr_set_tf_coef(u32 value)
 
 	/* for NOISE_TF_COEF and FLESH_TF_COEF  */
 	payload = iris_get_ipopt_payload_data(IRIS_IP_SDR2HDR_2, cur_level + 0x20, 2);
+	if (!payload)
+		return;
 	reg_val = payload[1];
 	if (save_coef) {
 		hdr_tf_coef[3] = BITS_GET(payload[1], 11, 19);
@@ -2341,6 +2685,8 @@ void iris_sdr2hdr_set_ftc(u32 value)
 		return;
 
 	payload = iris_get_ipopt_payload_data(IRIS_IP_SDR2HDR_2, option, 4);
+	if (!payload)
+		return;
 	payload[0] = (payload[0] & 0x00ffffff) + (iris_ftc_level[value] << 24);
 	iris_init_update_ipopt_t(IRIS_IP_SDR2HDR_2, option, option, 0x01);
 
@@ -2362,6 +2708,8 @@ void iris_sdr2hdr_set_degain(void)
 
 
 	payload = iris_get_ipopt_payload_data(IRIS_IP_SDR2HDR, option, 2);
+	if (!payload)
+		return;
 	if (pcfg->pt_sr_enable == false) {
 		payload[0] = iris_de_default[pqlt_cur_setting->pq_setting.sdr2hdr * 2];
 		payload[9] = iris_de_default[pqlt_cur_setting->pq_setting.sdr2hdr * 2 + 1];
@@ -2387,6 +2735,8 @@ void iris_sdr2hdr_graphic_set(u32 value)
 		return;
 
 	payload = iris_get_ipopt_payload_data(IRIS_IP_SDR2HDR, option, 2);
+	if (!payload)
+		return;
 	payload[0] &= ~0x02000000;
 	if (value != 0)
 		payload[0] |= 0x02000000;
@@ -2408,6 +2758,8 @@ void iris_sdr2hdr_scurve_set(u32 value)
 		return;
 
 	payload = iris_get_ipopt_payload_data(IRIS_IP_SDR2HDR, option, 2);
+	if (!payload)
+		return;
 	payload[0] &= ~0x00000400;
 	if (value != 0)
 		payload[0] |= 0x00000400;
@@ -2429,6 +2781,8 @@ void iris_sdr2hdr_set_de_ftc(u32 value)
 		return;
 
 	payload = iris_get_ipopt_payload_data(IRIS_IP_SDR2HDR, option, 10);
+	if (!payload)
+		return;
 	if (value > 0) {
 		payload[0] = (payload[0] & 0x007fffff) + (iris_de_ftc_level[value - 1] << 23);
 		payload[0] = (payload[0] & 0xffbfffff) + 0x00400000;
@@ -2472,6 +2826,8 @@ void iris_sdr2hdr_csc_switch(u32 value)
 
 	level = 0x70 + pqlt_cur_setting->pq_setting.sdr2hdr;
 	payload = iris_get_ipopt_payload_data(IRIS_IP_SDR2HDR, level, 7);
+	if (!payload)
+		return;
 	for (i = 0; i < 12; i++) {
 		payload[i] = iris_sdr2hdr_csc[i][value];
 		iris_set_ipopt_payload_data(IRIS_IP_SDR2HDR, level, 7+i, payload[i]);
@@ -2481,6 +2837,8 @@ void iris_sdr2hdr_csc_switch(u32 value)
 
 	level = 0x90 + pqlt_cur_setting->pq_setting.sdr2hdr;
 	payload = iris_get_ipopt_payload_data(IRIS_IP_SDR2HDR, level, 2);
+	if (!payload)
+		return;
 	for (i = 0; i < 24; i++) {
 		payload[i] = iris_sdr2hdr_csc[12+i][value];
 		iris_set_ipopt_payload_data(IRIS_IP_SDR2HDR, level, 2+i, payload[i]);
@@ -2489,6 +2847,8 @@ void iris_sdr2hdr_csc_switch(u32 value)
 
 	level = 0xA0 + pqlt_cur_setting->pq_setting.sdr2hdr;
 	payload = iris_get_ipopt_payload_data(IRIS_IP_SDR2HDR, level, 2);
+	if (!payload)
+		return;
 	for (i = 0; i < 21; i++) {
 		payload[i] = iris_sdr2hdr_csc[36+i][value];
 		iris_set_ipopt_payload_data(IRIS_IP_SDR2HDR, level, 2+i, payload[i]);
@@ -2518,6 +2878,8 @@ void iris_sdr2hdr_ai_tm(u32 value)
 	uint32_t  *payload = NULL;
 
 	payload = iris_get_ipopt_payload_data(IRIS_IP_AI, 0x20, 2);
+	if (!payload)
+		return;
 	payload[0] = (payload[0] & 0xffff0000) | value;
 	iris_init_update_ipopt_t(IRIS_IP_AI, 0x20, 0x20, 0x01);
 	iris_init_update_ipopt_t(IRIS_IP_AI, 0x80, 0x80, iris_skip_dma);
@@ -2533,6 +2895,8 @@ void iris_sdr2hdr_ai_lce(u32 value)
 	uint32_t  *payload = NULL;
 
 	payload = iris_get_ipopt_payload_data(IRIS_IP_AI, 0x20, 2);
+	if (!payload)
+		return;
 	payload[0] = (payload[0] & 0x0000ffff) | (value << 16);
 	iris_init_update_ipopt_t(IRIS_IP_AI, 0x20, 0x20, 0x01);
 	iris_init_update_ipopt_t(IRIS_IP_AI, 0x80, 0x80, iris_skip_dma);
@@ -2548,6 +2912,8 @@ void iris_sdr2hdr_ai_de(u32 value)
 	uint32_t  *payload = NULL;
 
 	payload = iris_get_ipopt_payload_data(IRIS_IP_AI, 0x20, 3);
+	if (!payload)
+		return;
 	payload[0] = (payload[0] & 0xffff0000) | value;
 	iris_init_update_ipopt_t(IRIS_IP_AI, 0x20, 0x20, 0x01);
 	iris_init_update_ipopt_t(IRIS_IP_AI, 0x80, 0x80, iris_skip_dma);
@@ -2563,6 +2929,8 @@ void iris_sdr2hdr_ai_graphic(u32 value)
 	uint32_t  *payload = NULL;
 
 	payload = iris_get_ipopt_payload_data(IRIS_IP_AI, 0x20, 3);
+	if (!payload)
+		return;
 	payload[0] = (payload[0] & 0x0000ffff) | (value << 16);
 	iris_init_update_ipopt_t(IRIS_IP_AI, 0x20, 0x20, 0x01);
 	iris_init_update_ipopt_t(IRIS_IP_AI, 0x80, 0x80, iris_skip_dma);
@@ -2578,6 +2946,8 @@ void iris_hdr_ai_input_bl(u32 bl_value, bool update)
 	uint32_t  *payload = NULL;
 
 	payload = iris_get_ipopt_payload_data(IRIS_IP_SDR2HDR_2, 0x50, 4);
+	if (!payload)
+		return;
 	payload[0] = bl_value;
 
 	iris_init_update_ipopt_t(IRIS_IP_SDR2HDR_2, 0x50, 0x50, 1);
@@ -2694,6 +3064,8 @@ void iris_scaler_gamma_enable(u32 level)
 	uint32_t  *payload = NULL;
 
 	payload = iris_get_ipopt_payload_data(IRIS_IP_DPP, 0x00, 2);
+	if (!payload)
+		return;
 
 	payload[0] &= ~0x00000040;
 	payload[0] |= (level << 6);
@@ -2891,6 +3263,8 @@ void iris_rx_meta_dma_list_send(u32 meta, bool commit)
 	uint32_t *payload = NULL;
 
 	payload = iris_get_ipopt_payload_data(IRIS_IP_RX, 0x02, 3);
+	if (!payload)
+		return;
 	payload[0] = meta;
 	iris_init_update_ipopt_t(IRIS_IP_RX, 0x02, 0x02, 0);
 	iris_update_pq_opt(iris_pq_update_path, commit);
@@ -3031,8 +3405,9 @@ int iris_update_backlight(u32 bl_lvl)
 		bl_lvl = (((bl_lvl & 0xff) << 8) | (bl_lvl >> 8));
 
 	iris_setting.quality_cur.ai_backlight = ((u32)pcfg->panel_nits*bl_lvl)/panel->bl_config.bl_max_level;
-	if (iris_setting.quality_cur.ai_auto_en == AI_BACKLIGHT_ENABLE
+	if ((iris_setting.quality_cur.ai_auto_en == AI_BACKLIGHT_ENABLE
 		|| iris_setting.quality_cur.ai_auto_en == AI_AMBIENT_BACKLIGHT_ENABLE)
+		&& iris_setting.quality_cur.pq_setting.sdr2hdr != SDR2HDR_9)
 		iris_hdr_ai_input_bl(iris_setting.quality_cur.ai_backlight, true);
 
 	return rc;
@@ -3065,6 +3440,8 @@ void iris_dom_set(int mode)
 		return;
 
 	payload = iris_get_ipopt_payload_data(IRIS_IP_DPORT, 0xF0, 2);
+	if (!payload)
+		return;
 	dport_ctrl0 = payload[0];
 	dport_ctrl0 &= ~0xc000;
 	dport_ctrl0 |= (mode & 0x3) << 14;
@@ -3096,12 +3473,34 @@ static void iris_brightness_para_set(uint32_t *values)
 	iris_init_update_ipopt_t(IRIS_IP_DPP, 0x60, 0x60, 0x1);
 
 	payload = iris_get_ipopt_payload_data(IRIS_IP_DPP, 0x61, 2);
+	if (!payload)
+		return;
 	dimmingGain = ((values[1] << 16) | values[0]);
 	iris_set_ipopt_payload_data(IRIS_IP_DPP, 0x61, 2, dimmingGain);
 	dimmingGain = values[2];
 	iris_set_ipopt_payload_data(IRIS_IP_DPP, 0x61, 3, dimmingGain);
 	iris_init_update_ipopt_t(IRIS_IP_DPP, 0x61, 0x61, 0x01);
 
+}
+
+void iris_brightness_para_reset(void)
+{
+	struct iris_update_regval regval;
+	uint32_t  *payload = NULL;
+
+	regval.ip = IRIS_IP_DPP;
+	regval.opt_id = 0x60;    //DIM_CTRL/FD
+	regval.mask = 0x00000001;
+	regval.value = 0x0;
+
+	iris_update_bitmask_regval_nonread(&regval, false);
+	iris_init_update_ipopt_t(IRIS_IP_DPP, 0x60, 0x60, 0x1);
+
+	payload = iris_get_ipopt_payload_data(IRIS_IP_DPP, 0x61, 2);
+	payload[0] = 0x40004000;
+	payload[1] = 0x4000;
+	iris_init_update_ipopt_t(IRIS_IP_DPP, 0x61, 0x61, 0x01);
+	iris_end_dpp(true);
 }
 
 void iris_csc2_para_set(uint32_t *values)
@@ -3116,10 +3515,14 @@ void iris_csc2_para_set(uint32_t *values)
 
 	//pre csc
 	payload = iris_get_ipopt_payload_data(IRIS_IP_DPP, 0x34, 2);
+	if (!payload)
+		return;
 	for (i = 0; i < 5; i++)
 		payload[i] = values[i];
 	iris_init_update_ipopt_t(IRIS_IP_DPP, 0x34, 0x34, 0x01);
 	payload = iris_get_ipopt_payload_data(IRIS_IP_DPP, 0xd0, 2);
+	if (!payload)
+		return;
 	for (i = 0; i < 3; i++)
 		payload[i] = values[i + 5];
 	iris_init_update_ipopt_t(IRIS_IP_DPP, 0xd0, 0xd0, 0x01);
@@ -3172,10 +3575,14 @@ void iris_csc2_para_set(uint32_t *values)
 		values[4] = 0x0000 << 16 | dwCSC2CoffValue[8];
 
 		payload = iris_get_ipopt_payload_data(IRIS_IP_DPP, 0x33, 2);
+		if (!payload)
+			return;
 		for (i = 0; i < 5; i++)
 			payload[i] = values[i];
 		iris_init_update_ipopt_t(IRIS_IP_DPP, 0x33, 0x33, 0x01);
 		payload = iris_get_ipopt_payload_data(IRIS_IP_DPP, 0xc0, 2);
+		if (!payload)
+			return;
 		for (i = 0; i < 3; i++)
 			payload[i] = dwCSC2CoffValue[i + 9];
 		iris_init_update_ipopt_t(IRIS_IP_DPP, 0xc0, 0xc0, 0x01);
@@ -3189,20 +3596,28 @@ void iris_csc2_para_reset(void)
 	int i;
 
 	payload = iris_get_ipopt_payload_data(IRIS_IP_DPP, 0x33, 2);
+	if (!payload)
+		return;
 	for (i = 0; i < 5; i++)
 		payload[i] = dwCSCCoffBuffer[i];
 	iris_init_update_ipopt_t(IRIS_IP_DPP, 0x33, 0x33, 0x01);
 	payload = iris_get_ipopt_payload_data(IRIS_IP_DPP, 0xc0, 2);
+	if (!payload)
+		return;
 	for (i = 0; i < 3; i++)
 		payload[i] = dwCSCCoffBuffer[i + 5];
 	iris_init_update_ipopt_t(IRIS_IP_DPP, 0xc0, 0xc0, 0x01);
 
 	//pre csc
 	payload = iris_get_ipopt_payload_data(IRIS_IP_DPP, 0x34, 2);
+	if (!payload)
+		return;
 	for (i = 0; i < 5; i++)
 		payload[i] = dwCSCCoffBuffer[i];
 	iris_init_update_ipopt_t(IRIS_IP_DPP, 0x34, 0x34, 0x01);
 	payload = iris_get_ipopt_payload_data(IRIS_IP_DPP, 0xd0, 2);
+	if (!payload)
+		return;
 	for (i = 0; i < 3; i++)
 		payload[i] = dwCSCCoffBuffer[i + 5];
 	iris_init_update_ipopt_t(IRIS_IP_DPP, 0xd0, 0xd0, 0x01);
@@ -3218,7 +3633,11 @@ void iris_csc_para_set(uint32_t *values)
 		IRIS_LOGE("brightness value is empty");
 		return;
 	}
+	if (!payload)
+		return;
 	payload = iris_get_ipopt_payload_data(IRIS_IP_DPP, 0x40, 3);
+	if (!payload)
+		return;
 	for (i = 0; i < 8; i++)
 		payload[i] = values[i];
 	iris_init_update_ipopt_t(IRIS_IP_DPP, 0x40, 0x40, 0x01);
@@ -3231,6 +3650,8 @@ void iris_csc_para_reset(void)
 	int i;
 
 	payload = iris_get_ipopt_payload_data(IRIS_IP_DPP, 0x40, 3);
+	if (!payload)
+		return;
 	for (i = 0; i < 8; i++)
 		payload[i] = dwCSCCoffBuffer[i];
 	iris_init_update_ipopt_t(IRIS_IP_DPP, 0x40, 0x40, 0x01);
@@ -3435,6 +3856,8 @@ void iris_update_tm_lut(void)
 	int i;
 
 	payload = iris_get_ipopt_payload_data(IRIS_IP_SDR2HDR_2, option, 2);
+	if (!payload)
+		return;
 	for (i = 0; i < 5; i++)
 		payload[1+i] = lut_tm[i];
 	for (i = 0; i < 7; i++)
@@ -3448,18 +3871,26 @@ void iris_update_tm_lut(void)
 		iris_set_ipopt_payload_data(IRIS_IP_SDR2HDR_2, option, 2+i, payload[i]);
 
 	payload = iris_get_ipopt_payload_data(IRIS_IP_SDR2HDR, option2, 2);
+	if (!payload)
+		return;
 	for (i = 0; i < 2; i++)
 		iris_set_ipopt_payload_data(IRIS_IP_SDR2HDR, option2, 2+i, lut_ratio[i]);
 
 	payload = iris_get_ipopt_payload_data(IRIS_IP_SDR2HDR, option3, 2);
+	if (!payload)
+		return;
 	for (i = 0; i < 24; i++)
 		iris_set_ipopt_payload_data(IRIS_IP_SDR2HDR, option3, 2+i, lut_csc[i]);
 
 	payload = iris_get_ipopt_payload_data(IRIS_IP_SDR2HDR, option4, 2);
+	if (!payload)
+		return;
 	payload[0] = (payload[0] & ~0x00300000) | (lut_csc[24] << 20);
 	iris_set_ipopt_payload_data(IRIS_IP_SDR2HDR, option4, 2, payload[0]);
 
 	payload = iris_get_ipopt_payload_data(IRIS_IP_SDR2HDR, option, 7);
+	if (!payload)
+		return;
 	payload[0] = (payload[0] & 0xffffe000) | lut_ratio[2];
 
 	if (pqlt_cur_setting->pq_setting.sdr2hdr != HDR10)
@@ -3506,6 +3937,8 @@ void iris_update_demura_lut(void)
 	payload_last = 1683 - payload_num * payload_size;
 
 	payload = iris_get_ipopt_payload_data(IRIS_IP_DPP, 0x90, 2);
+	if (!payload)
+		return;
 	if ((payload[0] & 0x4000) == 0x4000) {
 		payload[0] &= ~0x4000;
 		lut_index = 0x20;
@@ -3517,11 +3950,15 @@ void iris_update_demura_lut(void)
 
 	for (i = 0; i < payload_num; i++) {
 		payload = iris_get_ipopt_payload_data(DPP_DEMURA_LUT, lut_index, payload_size * i + 2);
+		if (!payload)
+			return;
 		for (j = 0; j < payload_size; j++)
 			payload[j] = lut_demura_sw[payload_size * i + j];
 	}
 	if (payload_last > 0) {
 		payload = iris_get_ipopt_payload_data(DPP_DEMURA_LUT, lut_index, payload_size * payload_num + 2);
+		if (!payload)
+			return;
 		for (j = 0; j < payload_last; j++)
 			payload[j] = lut_demura_sw[payload_size * payload_num + j];
 	}
@@ -3550,11 +3987,15 @@ void iris_update_demura_xy_lut(void)
 
 	for (i = 0; i < payload_num; i++) {
 		payload = iris_get_ipopt_payload_data(DPP_DEMURA_LUT, lut_index, payload_size * i + 2);
+		if (!payload)
+			return;
 		for (j = 0; j < payload_size; j++)
 			payload[j] = lut_demura_xy[payload_size * i + j];
 	}
 	if (payload_last > 0) {
 		payload = iris_get_ipopt_payload_data(DPP_DEMURA_LUT, lut_index, payload_size * payload_num + 2);
+		if (!payload)
+			return;
 		for (j = 0; j < payload_last; j++)
 			payload[j] = lut_demura_xy[payload_size * payload_num + j];
 	}
@@ -3571,6 +4012,8 @@ void iris_demura_enable(bool enable)
 	uint32_t  *payload = NULL;
 
 	payload = iris_get_ipopt_payload_data(IRIS_IP_DPP, 0x90, 2);
+	if (!payload)
+		return;
 	if (enable)
 		payload[0] |= 0x01;
 	else
@@ -3589,6 +4032,8 @@ void iris_pwil_dpp_en(bool dpp_en)
 	u32 cmd[4];
 
 	payload = iris_get_ipopt_payload_data(IRIS_IP_PWIL, 0xF0, 4);
+	if (!payload)
+		return;
 	if (dpp_en)
 		payload[0] |= 0x10;
 	else
@@ -3609,20 +4054,14 @@ void iris_pwil_dpp_en(bool dpp_en)
 	IRIS_LOGD("%s, dpp_en = %d", __func__, dpp_en);
 }
 
-void iris_pwil_dport_mode(bool dport_mode)
-{
-	iris_pwil_dport_disable(dport_mode, 2);
-
-	IRIS_LOGD("%s, dport_mode = %d", __func__, dport_mode);
-}
-
 void iris_sr_level_set(u32 mode, u32 guided_level, u32 dejaggy_level, u32 peaking_level, u32 DLTI_level)
 {
 	struct iris_cfg *pcfg = iris_get_cfg();
 
 	if (mode == FRC_MODE) {
 		if (pcfg->memc_info.memc_mode == MEMC_SINGLE_GAME_ENABLE ||
-			pcfg->memc_info.memc_mode == MEMC_DUAL_EXTMV_ENABLE) {
+			pcfg->memc_info.memc_mode == MEMC_DUAL_EXTMV_ENABLE ||
+			pcfg->memc_info.memc_mode == MEMC_DUAL_GAME_ENABLE) {
 			pcfg->frcgame_pq_guided_level = guided_level;
 			pcfg->frcgame_pq_dejaggy_level = dejaggy_level;
 			pcfg->frcgame_pq_peaking_level = peaking_level;

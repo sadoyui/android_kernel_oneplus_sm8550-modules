@@ -178,6 +178,8 @@ struct dsi_panel_oplus_privite {
 	u32 osc_rate_cur;
 	bool gpio_pre_on;
 	bool pinctrl_enabled;
+	bool pwm_switch_support;
+	bool dynamic_demua_support;
 /********************************************
 	fp_type usage:
 	bit(0):lcd capacitive fingerprint(aod/fod are not supported)
@@ -191,11 +193,15 @@ struct dsi_panel_oplus_privite {
 ********************************************/
 	u32 fp_type;
 	bool enhance_mipi_strength;
+	bool oplus_vreg_ctrl_flag;
+	bool oplus_sw_reset_ctrl_flag;
+	bool oplus_disp_hw_seq_modify_flag;
 };
 
 struct dsi_panel_oplus_serial_number {
 	bool serial_number_support;
 	bool is_reg_lock;
+	bool is_switch_page;
 	u32 serial_number_reg;
 	int serial_number_index;
 	int serial_number_conut;
@@ -218,6 +224,7 @@ struct dsi_backlight_config {
 	u32 global_hbm_case_id;
 	u32 global_hbm_threshold;
 	bool global_hbm_scale_mapping;
+	u32 pwm_bl_threshold;
 #endif /* OPLUS_FEATURE_DISPLAY */
 
 	/* current brightness value */
@@ -410,6 +417,10 @@ struct dsi_panel {
 	struct mutex panel_tx_lock;
 	bool is_switching;
 	struct mutex oplus_ffc_lock;
+	u32 oplus_pwm_switch_state;
+	bool pwm_power_on;
+	bool pwm_hbm_state;
+	ktime_t te_timestamp;
 #endif /* OPLUS_FEATURE_DISPLAY */
 
 #if defined(CONFIG_PXLW_IRIS)

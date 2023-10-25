@@ -32,6 +32,7 @@ int oplus_panel_cmd_print(struct dsi_panel *panel, enum dsi_cmd_set_type type)
 	case DSI_CMD_QSYNC_MIN_FPS_0:
 	case DSI_CMD_QSYNC_MIN_FPS_1:
 	case DSI_CMD_ESD_SWITCH_PAGE:
+	case DSI_CMD_SKIPFRAME_DBV:
 		/* Do nothing */
 		break;
 	default:
@@ -231,11 +232,16 @@ int oplus_panel_gpio_on(struct dsi_panel *panel)
 	r_config = &panel->reset_config;
 
 	if (!panel->oplus_priv.gpio_pre_on &&
-			gpio_is_valid(panel->reset_config.panel_vout_gpio)) {
+			gpio_is_valid(panel->reset_config.panel_vout_gpio)
+			&& strcmp(panel->name, "AC052 P 1 A0002 dsc cmd mode panel")
+			&& strcmp(panel->name, "AC052 P 3 A0003 dsc cmd mode panel")) {
 		rc = gpio_direction_output(panel->reset_config.panel_vout_gpio, 1);
 		if (rc)
 			LCD_ERR("unable to set dir for panel_vout_gpio rc=%d\n", rc);
 		gpio_set_value(panel->reset_config.panel_vout_gpio, 1);
+		if (!strcmp(panel->name, "AC052 S 3 A0001 dsc cmd mode panel")
+			|| !strcmp(panel->name, "AA536 P 3 A0001 dsc cmd mode panel"))
+			usleep_range(2*1000, (2*1000)+100);
 	}
 	if (gpio_is_valid(panel->reset_config.panel_vddr_aod_en_gpio)) {
 		rc = gpio_direction_output(panel->reset_config.panel_vddr_aod_en_gpio, 1);
@@ -257,7 +263,10 @@ int oplus_panel_gpio_off(struct dsi_panel *panel)
 
 	r_config = &panel->reset_config;
 
-	if (gpio_is_valid(panel->reset_config.panel_vout_gpio))
+	if (gpio_is_valid(panel->reset_config.panel_vout_gpio)
+		&& strcmp(panel->name, "AC052 P 1 A0002 dsc cmd mode panel")
+		&& strcmp(panel->name, "AC052 P 3 A0003 dsc cmd mode panel")
+		&& strcmp(panel->name, "AA536 P 3 A0001 dsc cmd mode panel"))
 		gpio_set_value(panel->reset_config.panel_vout_gpio, 0);
 	if (gpio_is_valid(panel->reset_config.panel_vddr_aod_en_gpio))
 		gpio_set_value(panel->reset_config.panel_vddr_aod_en_gpio, 0);
@@ -562,6 +571,59 @@ int oplus_panel_pinctrl_init(struct dsi_panel *panel)
 	}
 
 error:
+	return rc;
+}
+
+int oplus_panel_vddr_on(struct dsi_display *display, const char *vreg_name)
+{
+	int rc = 0;
+
+	if (!display || !display->panel) {
+		LCD_ERR("display or display panel is null, power vddr failed!\n");
+		return -ENODEV;
+	}
+
+	if ((!strcmp(display->panel->name, "AC052 P 3 A0003 dsc cmd mode panel")
+		|| !strcmp(display->panel->name, "AC052 P 1 A0002 dsc cmd mode panel")
+		|| !strcmp(display->panel->name, "AA536 P 3 A0001 dsc cmd mode panel"))
+		&& !strcmp(vreg_name, "vddio")) {
+		if (gpio_is_valid(display->panel->reset_config.panel_vout_gpio)) {
+			rc = gpio_direction_output(display->panel->reset_config.panel_vout_gpio, 1);
+			if (rc)
+				LCD_ERR("unable to set dir for panel_vout_gpio rc=%d\n", rc);
+			gpio_set_value(display->panel->reset_config.panel_vout_gpio, 1);
+		}
+	}
+
+	return rc;
+}
+
+int oplus_panel_vddr_off(struct dsi_display *display, const char *vreg_name)
+{
+	int rc = 0;
+
+	if (!display || !display->panel) {
+		LCD_ERR("display or display panel is null, power vddr failed!\n");
+		return -ENODEV;
+	}
+
+	if ((!strcmp(display->panel->name, "AC052 P 3 A0003 dsc cmd mode panel")
+		|| !strcmp(display->panel->name, "AC052 P 1 A0002 dsc cmd mode panel")
+		|| !strcmp(display->panel->name, "AA536 P 3 A0001 dsc cmd mode panel"))
+		&& !strcmp(vreg_name, "vci")) {
+		usleep_range(2*1000, (2*1000)+100);
+		if (gpio_is_valid(display->panel->reset_config.panel_vout_gpio)) {
+			gpio_set_value(display->panel->reset_config.panel_vout_gpio, 0);
+		}
+	}
+
+	if (display->panel->oplus_priv.oplus_disp_hw_seq_modify_flag && !strcmp(vreg_name, "vci")) {
+		usleep_range(2*1000, (2*1000)+100);
+		if (gpio_is_valid(display->panel->reset_config.panel_vout_gpio)) {
+			gpio_set_value(display->panel->reset_config.panel_vout_gpio, 0);
+		}
+	}
+
 	return rc;
 }
 

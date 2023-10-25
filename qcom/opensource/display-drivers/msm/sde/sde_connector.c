@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2021-2023 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2021-2022 Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2016-2021, The Linux Foundation. All rights reserved.
  */
 
@@ -37,6 +37,10 @@
 #ifdef OPLUS_FEATURE_DISPLAY_ONSCREENFINGERPRINT
 #include "../oplus/oplus_onscreenfingerprint.h"
 #endif /* OPLUS_FEATURE_DISPLAY_ONSCREENFINGERPRINT */
+
+#ifdef OPLUS_FEATURE_DISPLAY_TEMP_COMPENSATION
+#include "../oplus/oplus_display_temp_compensation.h"
+#endif /* OPLUS_FEATURE_DISPLAY_TEMP_COMPENSATION */
 
 #include "sde_trace.h"
 #include <linux/list.h>
@@ -819,6 +823,15 @@ static int _sde_connector_update_power_locked(struct sde_connector *c_conn)
 		display = c_conn->display;
 		set_power = c_conn->ops.set_power;
 
+#ifdef OPLUS_FEATURE_DISPLAY_TEMP_COMPENSATION
+		if (oplus_temp_compensation_is_supported()) {
+			if (mode == SDE_MODE_DPMS_ON){
+				SDE_DEBUG("update ntc temp immediately when power on\n");
+				oplus_temp_compensation_get_ntc_temp();
+			}
+		}
+#endif /* OPLUS_FEATURE_DISPLAY_TEMP_COMPENSATION */
+
 		mutex_unlock(&c_conn->lock);
 		rc = set_power(connector, mode, display);
 		mutex_lock(&c_conn->lock);
@@ -1201,6 +1214,16 @@ static int _sde_connector_update_dirty_properties(
 		case CONNECTOR_PROP_SYNC_BACKLIGHT_LEVEL:
 			if (c_conn) {
 				c_conn->bl_need_sync = true;
+			}
+			break;
+		case CONNECTOR_PROP_SET_BACKLIGHT_NITS:
+			if (c_conn) {
+				c_conn->bl_nits_dirty = true;
+			}
+			break;
+		case CONNECTOR_PROP_SET_DIMMING_SCALE:
+			if (c_conn) {
+				c_conn->dimming_scale_dirty = true;
 			}
 			break;
 #endif /* OPLUS_FEATURE_DISPLAY */
@@ -1886,23 +1909,6 @@ static int _sde_connector_set_prop_out_fb(struct drm_connector *connector,
 	return rc;
 }
 
-static struct drm_encoder *
-sde_connector_best_encoder(struct drm_connector *connector)
-{
-	struct sde_connector *c_conn = to_sde_connector(connector);
-
-	if (!connector) {
-		SDE_ERROR("invalid connector\n");
-		return NULL;
-	}
-
-	/*
-	 * This is true for now, revisit this code when multiple encoders are
-	 * supported.
-	 */
-	return c_conn->encoder;
-}
-
 static int _sde_connector_set_prop_retire_fence(struct drm_connector *connector,
 		struct drm_connector_state *state,
 		uint64_t val)
@@ -1938,13 +1944,9 @@ static int _sde_connector_set_prop_retire_fence(struct drm_connector *connector,
 		 */
 		offset++;
 
-		/* get hw_ctl for a wb connector not in cwb mode */
-		if (c_conn->connector_type == DRM_MODE_CONNECTOR_VIRTUAL) {
-			struct drm_encoder *drm_enc = sde_connector_best_encoder(connector);
-
-			if (drm_enc && !sde_encoder_in_clone_mode(drm_enc))
-				hw_ctl = sde_encoder_get_hw_ctl(c_conn);
-		}
+		/* get hw_ctl for a wb connector */
+		if (c_conn->connector_type == DRM_MODE_CONNECTOR_VIRTUAL)
+			hw_ctl = sde_encoder_get_hw_ctl(c_conn);
 
 		rc = sde_fence_create(c_conn->retire_fence,
 					&fence_user_fd, offset, hw_ctl);
@@ -2137,6 +2139,12 @@ static int sde_connector_atomic_set_property(struct drm_connector *connector,
 
 #ifdef OPLUS_FEATURE_DISPLAY
 	case CONNECTOR_PROP_SYNC_BACKLIGHT_LEVEL:
+		msm_property_set_dirty(&c_conn->property_info, &c_state->property_state, idx);
+		break;
+	case CONNECTOR_PROP_SET_BACKLIGHT_NITS:
+		msm_property_set_dirty(&c_conn->property_info, &c_state->property_state, idx);
+		break;
+	case CONNECTOR_PROP_SET_DIMMING_SCALE:
 		msm_property_set_dirty(&c_conn->property_info, &c_state->property_state, idx);
 		break;
 #endif /* OPLUS_FEATURE_DISPLAY */
@@ -3025,6 +3033,23 @@ sde_connector_mode_valid(struct drm_connector *connector,
 	return MODE_OK;
 }
 
+static struct drm_encoder *
+sde_connector_best_encoder(struct drm_connector *connector)
+{
+	struct sde_connector *c_conn = to_sde_connector(connector);
+
+	if (!connector) {
+		SDE_ERROR("invalid connector\n");
+		return NULL;
+	}
+
+	/*
+	 * This is true for now, revisit this code when multiple encoders are
+	 * supported.
+	 */
+	return c_conn->encoder;
+}
+
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0))
 static struct drm_encoder *
 sde_connector_atomic_best_encoder(struct drm_connector *connector,
@@ -3472,6 +3497,10 @@ static int _sde_connector_install_properties(struct drm_device *dev,
 #ifdef OPLUS_FEATURE_DISPLAY
 		msm_property_install_volatile_range(&c_conn->property_info, "sync_backlight_level",
 				0x0, 0, ~0, 0, CONNECTOR_PROP_SYNC_BACKLIGHT_LEVEL);
+		msm_property_install_volatile_range(&c_conn->property_info, "set_backlight_nits",
+				0x0, 0, ~0, 0, CONNECTOR_PROP_SET_BACKLIGHT_NITS);
+		msm_property_install_volatile_range(&c_conn->property_info, "set_dimming_scale",
+				0x0, 0, ~0, 0, CONNECTOR_PROP_SET_DIMMING_SCALE);
 #endif /* OPLUS_FEATURE_DISPLAY */
 
 		msm_property_install_range(&c_conn->property_info, "dyn_transfer_time",
@@ -3875,8 +3904,7 @@ int sde_connector_register_custom_event(struct sde_kms *kms,
 		break;
 	case DRM_EVENT_SDE_HW_RECOVERY:
 		ret = _sde_conn_enable_hw_recovery(conn_drm);
-		if (SDE_DBG_DEFAULT_DUMP_MODE != SDE_DBG_DUMP_IN_LOG_LIMITED)
-			sde_dbg_update_dump_mode(val);
+		sde_dbg_update_dump_mode(val);
 		break;
 	default:
 		break;

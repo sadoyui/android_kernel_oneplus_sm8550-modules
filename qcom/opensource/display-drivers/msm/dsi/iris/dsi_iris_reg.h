@@ -135,7 +135,10 @@
 #define GMD_SHIFT		0x0000c
 #define GMD_START		0x00010
 #define GMD_STOP		0x00014
+#define GMD_START_WIN	0x00018
+#define GMD_STOP_WIN	0x0001c
 #define GMD_CTRL		0x00020
+#define GMD_SUM_SEL		0x00024
 
 /* FBD */
 #define FILMBD_RESOLUTION		0x00014
@@ -163,7 +166,7 @@
 #define MVC_OSDDET_1			0x000b0
 #define MVC_POSTFILT_0			0x000f0
 #define MVC_REGIONMV_2			0x00154
-#define MVC_SAD_2			0x00160
+#define MVC_SAD_2			    0x00160
 #define MVC_TEXTFLAG_0			0x00164
 #define MVC_OSDWIN_0			0x001d8
 #define MVC_OSDWIN_1			0x001dc
@@ -180,7 +183,7 @@
 #define FI_DEMO_WIN_SIZE_0		0x00010
 #define FI_DEMO_WIN_SIZE_1		0x00014
 #define FI_DEMO_YUV_VALUE		0x00018
-#define FI_BLENDING_CTRL1		0x00020
+#define FI_BLENDING_CTRL1          0x00020
 #define FI_BLENDING_CTRL2          0x00024
 #define FI_BLENDING_CTRL3          0x00028
 #define FI_BLENDING_CTRL4          0x0002c
@@ -209,18 +212,18 @@
 #define MVF_SMI_CTRL			0x00008
 #define MVF_VERTIRANGE_CFG		0x0000c
 #define MVF_CAND_CFG			0x00010
-#define HR_MVC_CFG1			0x00030
-#define HR_MVC_CFG2			0x00034
-#define MVF_MISC_CFG3			0x00070
-#define MVF_OSDMV			0x000d4
-#define MVF_OSDMV2			0x000d8
-#define MVF_OSDMV3				0x000dc
+#define HR_MVC_CFG1             0x00030
+#define HR_MVC_CFG2             0x00034
+#define MVF_MISC_CFG3           0x00070
+#define MVF_OSDMV               0x000d4
+#define MVF_OSDMV2              0x000d8
+#define MVF_OSDMV3              0x000dc
 #define EMVSEL_CFG2				0x0011c
 #define EMVSEL_CFG10			0x0013c
 #define EMVSEL_CFG13			0x00148
 #define EMVSEL_CFG15			0x00150
-#define EMVSEL_CFG19			0x00160
-#define MVF_HMTNFB			0x0017C
+#define EMVSEL_CFG19            0x00160
+#define MVF_HMTNFB              0x0017c
 #define MVF_SHDW_CTRL			0x001a8
 
 /* RGME */
@@ -263,6 +266,7 @@
 #define PWIL_FRC_CTRL			0x000f8
 #define PWIL_FRC_INIT			0x000fc
 #define PWIL_DMA_CTRL			0x00150
+#define PWIL_IDLE_MASK			0x00158
 #define PWIL_STATUS				0x0015c
 #define PWIL_PIAD_BLEND_INFO		0x0017c
 #define PWIL_CUR_META0			0x00228

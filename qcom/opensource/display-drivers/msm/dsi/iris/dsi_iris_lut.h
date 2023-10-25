@@ -11,7 +11,7 @@
 
 //iris7, coef includes crstk's coef and pre_csc's coef
 #define CRSTK_COEF_SIZE        (18*3*2+9*3*2)  //crstk0_coef + crstk1_coef (uint16) * 3 for each group
-#define CRSTK_COEF_GROUP       (9) // 11   //golden has 11 groups, calibrated would have 9 groups
+#define CRSTK_COEF_GROUP       (11) // 11   //golden has 11 groups, calibrated would have 9 groups
 #define CCT_VALUE_SIZE          (3*2) //warm, standard & cool
 
 enum {

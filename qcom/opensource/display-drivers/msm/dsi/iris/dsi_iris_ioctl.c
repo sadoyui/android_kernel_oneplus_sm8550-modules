@@ -21,6 +21,8 @@
 #include "dsi_iris_memc.h"
 #include "dsi_iris_timing_switch.h"
 #include "dsi_iris_cmpt.h"
+
+#include <soc/oplus/system/oplus_project.h>
 // for game station settings via i2c
 uint32_t CM_CNTL[14] = {
 	0xf0560000, 0x8020e000,
@@ -241,6 +243,7 @@ static bool iris_special_config(u32 type)
 	case IRIS_CHIP_VERSION:
 	case IRIS_FW_UPDATE:
 	case IRIS_DEBUG_SET:
+	case IRIS_FRC_PQ_LEVEL:
 		return true;
 	}
 
@@ -255,10 +258,7 @@ static bool _iris_is_valid_type(u32 display, u32 type, u32 value)
 		return false;
 
 	//Don't refer HDK codes
-	if ((type == IRIS_MEMC_CTRL && value == MEMC_CTRL_PANEL_TE_SWITCH) ||
-		(type == IRIS_MEMC_CTRL && value == MEMC_CTRL_PANEL_ADJUST_TP_SCANLINE) ||
-		(type == IRIS_MEMC_CTRL && value == MEMC_CTRL_PANEL_RESET_TP_SCANLINE) ||
-		(type == IRIS_MEMC_CTRL && value == MEMC_CTRL_PANEL_TP_VSYNC_SWITCH)) {
+	if (type == IRIS_KERNEL_STATUS_GET && value == GET_IRIS_ESD_CNT) {
 		return true;
 	}
 
@@ -281,6 +281,8 @@ static int _iris_configure(u32 display, u32 type, u32 value)
 	struct quality_setting *pqlt_cur_setting = &iris_setting->quality_cur;
 	bool ai_lce_disable = false;
 	bool dpp_precsc_enable;
+	bool gamut_update = false;
+	u32 regval;
 
 	switch (type) {
 	case IRIS_CM_COLOR_TEMP_MODE:
@@ -298,13 +300,19 @@ static int _iris_configure(u32 display, u32 type, u32 value)
 		//	goto error;
 		dpp_precsc_enable = ((value & 0x80) == 0x80) ? 1 : 0;
 
+		gamut_update = (pqlt_cur_setting->pq_setting.cmcolorgamut != (value & 0x7f)) ? 1 : 0;
 		pqlt_cur_setting->pq_setting.cmcolorgamut = value & 0x7f;
 		if (pqlt_cur_setting->pq_setting.cmcolorgamut == 0)
 			dpp_precsc_enable = 0;
 
 		if (pqlt_cur_setting->pq_setting.cmcolortempmode) {
 			iris_dpp_precsc_enable(dpp_precsc_enable, false);
-			iris_cm_color_gamut_set(pqlt_cur_setting->pq_setting.cmcolorgamut, true);
+			if (gamut_update) {
+				iris_dpp_precsc_enable(dpp_precsc_enable, false);
+				iris_cm_color_gamut_set(pqlt_cur_setting->pq_setting.cmcolorgamut, true);
+			} else {
+				iris_dpp_precsc_enable(dpp_precsc_enable, true);
+			}
 		}
 		iris_dpp_precsc_set(dpp_precsc_enable);
 		break;
@@ -328,6 +336,8 @@ static int _iris_configure(u32 display, u32 type, u32 value)
 		iris_dbp_switch(value & 0x1, 0);
 		break;
 	case IRIS_SDR2HDR:
+		pqlt_cur_setting->pq_setting.edr_ratio = (value & 0x3000) >> 12;
+		IRIS_LOGI("edr ratio %d",pqlt_cur_setting->pq_setting.edr_ratio);
 		iris_set_sdr2hdr_mode((value & 0xf00) >> 8);
 		value = value & 0xff;
 		if (value/10 == 4) {/*magic code to enable YUV input.*/
@@ -610,6 +620,41 @@ static int _iris_configure(u32 display, u32 type, u32 value)
 			IRIS_LOGI("%s(), disable N2M function in PT mode", __func__);
 			iris_set_n2m_enable(false, 1);
 			iris_dtg_te_n2m_ctrl_setting_send(false);
+		}
+		break;
+	case IRIS_CLEAR_FRC_MIF_INT:
+		break;
+	case IRIS_SET_DPP_APL_ABS:
+		iris_ioctl_i2c_read(0xF0040038, &regval);
+		regval &= ~0x000003ff;
+		value &= 0x000003ff;
+		regval |= value;
+		iris_ioctl_i2c_write(0xF0040038, regval);
+		break;
+	case IRIS_SET_DPP_APL_RES:
+		iris_ioctl_i2c_write(0x00003008, value);
+		break;
+	case IRIS_ENABLE_DPP_APL:
+		iris_ioctl_i2c_read(0xF0040038, &regval);
+		if (value == 1)
+			regval |= 0x80000000;
+		else
+			regval &= ~0x80000000;
+		iris_ioctl_i2c_write(0xf0040038, regval);
+		break;
+	case IRIS_BLENDING_CSR_CTRL:
+		{
+			uint32_t  *payload = NULL;
+
+			payload = iris_get_ipopt_payload_data(IRIS_IP_BLEND, 0xF0, 9);
+			IRIS_LOGI("%s(), blending csr ctrl = 0x%08x\n", __func__, payload[0]);
+			if (value == 0)
+				payload[0] = 0;
+			else
+				payload[0] = 0x00040100;
+			iris_sync_current_ipopt(IRIS_IP_BLEND, 0xF0);
+
+			iris_send_ipopt_cmds(IRIS_IP_BLEND, 0xF0);
 		}
 		break;
 	default:
@@ -1057,9 +1102,6 @@ static int _iris_configure_ex(u32 display, u32 type, u32 count, u32 *values)
 		if (pcfg->abyp_ctrl.abypass_mode == ANALOG_BYPASS_MODE) {
 			IRIS_LOGW("cannot set SR not in BYPASS mode");
 			goto error;
-		} else if (pcfg->frc_enabled || pcfg->pwil_mode == FRC_MODE) {
-			IRIS_LOGW("cannot set SR not in FRC mode");
-			goto error;
 		}
 		if (count != 7) {
 			IRIS_LOGW("cannot set SR with wrong parameter count: %d", count);
@@ -1090,30 +1132,63 @@ static int _iris_configure_ex(u32 display, u32 type, u32 count, u32 *values)
 					values[1] -= 4;
 					}
 			}
-			iris_sr_level_set(PT_MODE, values[3], values[4], values[5], values[6]);
-			iris_pt_sr_set(values[0], values[1], values[2]);
-			pcfg->pt_sr_enable = values[0];
-			iris_sdr2hdr_set_degain();
+			if (pcfg->frc_enabled || pcfg->pwil_mode == FRC_MODE || iris_is_pmu_dscu_on()) {
+				pcfg->pt_sr_enable_restore = values[0];
+				if (pcfg->pt_sr_enable_restore) {
+					pcfg->pt_sr_hsize = values[1];
+					pcfg->pt_sr_vsize = values[2];
+				}
+				return 0;
+			} else {
+				pcfg->pt_sr_enable = values[0];
+				iris_sr_level_set(PT_MODE, values[3], values[4], values[5], values[6]);
+				iris_pt_sr_set(values[0], values[1], values[2]);
+				iris_sdr2hdr_set_degain();
+			}
 		} else {
 			IRIS_LOGW("SR alreay enabled or disabled");
-			goto error;
+			return 0;
 		}
-		IRIS_LOGI("PT-SR enable: %d, size: %d * %d", values[0], values[1], values[2]);
+		IRIS_LOGI("PT-SR enable: %d, size: %d * %d in frc_enabled: %d  pwil_mode: %d", values[0], values[1], values[2], pcfg->frc_enabled, pcfg->pwil_mode);
 		break;
 	case IRIS_FRC_PQ_LEVEL:
+		if (count < 5) {
+			IRIS_LOGW("cannot set frc pq with wrong parameter count: %d", count);
+			goto error;
+		}
+
 		if (values[0] == 1) {
 			pcfg->frc_pq_guided_level = values[1];
 			pcfg->frc_pq_dejaggy_level = values[2];
 			pcfg->frc_pq_peaking_level = values[3];
 			pcfg->frc_pq_DLTI_level = values[4];
+			if (pcfg->frc_enabled || pcfg->pwil_mode == FRC_MODE) {
+				if (pcfg->memc_info.memc_mode < MEMC_SINGLE_GAME_ENABLE) {
+					iris_sr_level_set(FRC_MODE, pcfg->frc_pq_guided_level,
+						pcfg->frc_pq_dejaggy_level,
+						pcfg->frc_pq_peaking_level,
+						pcfg->frc_pq_DLTI_level);
+					iris_sr_update();
+				}
+			}
 		} else if (values[0] == 2) {
 			pcfg->frcgame_pq_guided_level = values[1];
 			pcfg->frcgame_pq_dejaggy_level = values[2];
 			pcfg->frcgame_pq_peaking_level = values[3];
 			pcfg->frcgame_pq_DLTI_level = values[4];
+			if (pcfg->frc_enabled || pcfg->pwil_mode == FRC_MODE) {
+				if (pcfg->memc_info.memc_mode >= MEMC_SINGLE_GAME_ENABLE) {
+					iris_sr_level_set(FRC_MODE, pcfg->frcgame_pq_guided_level,
+						pcfg->frcgame_pq_dejaggy_level,
+						pcfg->frcgame_pq_peaking_level,
+						pcfg->frcgame_pq_DLTI_level);
+					iris_sr_update();
+				}
+			}
 		} else {
 			IRIS_LOGE("invalid parameter: %d", values[0]);
 		}
+		IRIS_LOGI("frc pq parameter: %d, %d, %d, %d, %d", values[0], values[1], values[2], values[3], values[4]);
 		break;
 	case IRIS_DEMURA_LUT_SET:
 		iris_demura_lut = iris_get_demura_info();
@@ -1453,6 +1528,151 @@ int iris_configure_get(u32 display, u32 type, u32 count, u32 *values)
 		values[4] = pcfg->pt_sr_dejaggy_level;
 		values[5] = pcfg->pt_sr_peaking_level;
 		values[6] = pcfg->pt_sr_DLTI_level;
+		break;
+	case IRIS_GET_FRC_MIF_INTRAW:
+		mutex_lock(&pcfg->panel->panel_lock);
+		if (atomic_read(&pcfg->iris_esd_flag) == 0) {
+			reg_val = 0;
+			if (iris_ioctl_i2c_read(0xf201ffe4, &reg_val) != 0) {
+				IRIS_LOGE("%s(%d), i2c read frc mif status failed\n", __func__, __LINE__);
+				*values = 107;  //i2c read fail
+			} else {
+				IRIS_LOGD("%s(%d), addr = 0xf201ffe4, value = 0x%08x\n", __func__, __LINE__, reg_val);
+				if (reg_val == 0x0badbad0)
+					*values = 0x11;
+				else {
+					if ((reg_val & 0x40010100) != 0x40010100)
+						*values = 0x10;
+					else
+						*values = 0;
+				}
+			}
+		} else {
+			*values = 0;
+		}
+		mutex_unlock(&pcfg->panel->panel_lock);
+		break;
+	case IRIS_GET_MEMC_REG_STATUS:
+		mutex_lock(&pcfg->panel->panel_lock);
+		*values = 0;
+		if (atomic_read(&pcfg->iris_esd_flag) == 0) {
+			u8 i = 0;
+			u32 reg_addr[7] = {0xf191ffe4, 0xf195ffe4, 0xf199ffe4, 0xf1a9ffe4, 0xf1adffe4, 0xf17dffe4, 0xf12dffe4};
+			u32 reg_mask[7] = {0x00000001, 0x00001e00, 0x00000178, 0x00000003, 0x00000003, 0x00000008, 0x00000c2a};
+
+			for (i = 0; i < 7; i++) {
+				reg_val = 0;
+				if (iris_ioctl_i2c_read(reg_addr[i], &reg_val) != 0) {
+					IRIS_LOGE("%s(%d), i2c read 0x%08x failed\n", __func__, __LINE__, reg_addr[i]);
+					*values = 107;  //i2c read fail
+					break;
+				}
+
+				IRIS_LOGD("%s(%d), addr = 0x%08x, value = 0x%08x, mask = 0x%08x\n", __func__, __LINE__,
+					reg_addr[i], reg_val, reg_mask[i]);
+				if (reg_val == 0x0badbad0) {
+					*values = i + 8;
+					break;
+				}
+				if (reg_val & reg_mask[i]) {
+					*values = i + 1;
+					break;
+				}
+
+			}
+		}
+		mutex_unlock(&pcfg->panel->panel_lock);
+		break;
+	case IRIS_GET_DPP_MCU_RES:
+		mutex_lock(&pcfg->panel->panel_lock);
+		*values = 0;
+		if (atomic_read(&pcfg->iris_esd_flag) == 0) {
+			u32 i = 0;
+			u32 check_status = 0;
+			u32 apl_res = 0;
+
+			IRIS_LOGI("%s(), apl_res of front 2 frames as follows:\n", __func__);
+
+			for (i = 0; i < 2; i++) {
+				if (iris_ioctl_i2c_read(0x00003200 + i*4, &apl_res) != 0) {
+					IRIS_LOGE("%s(%d), i2c read dpp apl_res frame[%d] failed\n",
+					__func__, __LINE__, i);
+					*values = 107;  //i2c read fail
+				}
+				IRIS_LOGI("%s(), frame[%2d] = 0x%08x\n", __func__, i, apl_res);
+			}
+
+			if (iris_ioctl_i2c_read(0x00003100, &apl_res) != 0) {
+				IRIS_LOGE("%s(%d), i2c read dpp apl_res reference failed\n",
+					__func__, __LINE__);
+				*values = 107;  //i2c read fail
+			}
+
+			IRIS_LOGI("%s(), apl_res reference: 0x%08x\n", __func__, apl_res);
+
+			if (iris_ioctl_i2c_read(0x00003000, &check_status) != 0) {
+				IRIS_LOGE("%s(%d), i2c read dpp apl_res status failed\n",
+					__func__, __LINE__);
+				*values = 107;  //i2c read fail
+			} else {
+				if (check_status == 1) {
+					*values = 1;
+					if (iris_ioctl_i2c_read(0x00003004, &apl_res) != 0)
+						IRIS_LOGE("%s(%d), i2c read dpp apl_res buffer failed\n",
+							__func__, __LINE__);
+
+					IRIS_LOGI("%s(), apl_res buffer: 0x%08x\n", __func__, apl_res);
+				}
+			}
+		}
+		mutex_unlock(&pcfg->panel->panel_lock);
+		break;
+	case IRIS_GET_DPP_APL_RES:
+		mutex_lock(&pcfg->panel->panel_lock);
+		*values = 0;
+		{
+			u32 apl_res = 0;
+
+			if (iris_ioctl_i2c_read(0xf13003bc, &apl_res) != 0) {
+				*values = 107;  //i2c read fail
+				IRIS_LOGE("%s(%d), i2c read dpp apl_res register failed\n",
+					__func__, __LINE__);
+			}
+
+			IRIS_LOGI("%s(), current frame apl_res register: 0x%08x\n", __func__, apl_res);
+
+		}
+		mutex_unlock(&pcfg->panel->panel_lock);
+		break;
+	case IRIS_DUMP_APL_PER_FRAME:
+		mutex_lock(&pcfg->panel->panel_lock);
+		*values = 0;
+		{
+			u32 i = 0;
+			u32 apl_res = 0;
+			u32 frame_count = 0;
+
+			IRIS_LOGI("%s(), dump apl of all frames as follows:\n", __func__);
+
+			if (iris_ioctl_i2c_read(0x00003104, &frame_count) != 0) {
+				IRIS_LOGE("%s(%d), i2c read dpp apl_res reference failed\n",
+					__func__, __LINE__);
+				*values = 107;  //i2c read fail
+			}
+			IRIS_LOGI("%s(), frame count is: %d\n", __func__, frame_count);
+			if (frame_count > 4096)
+				frame_count = 4096;
+
+			for (i = 0; i < frame_count; i++) {
+				if (iris_ioctl_i2c_read(0x00003200 + i*4, &apl_res) != 0) {
+					IRIS_LOGE("%s(%d), i2c read dpp apl_res frame[%d] failed\n",
+					__func__, __LINE__, i);
+					*values = 107;  //i2c read fail
+				}
+				IRIS_LOGI("%s(), frame[%4d] = 0x%08x\n", __func__, i, apl_res);
+			}
+		}
+		mutex_unlock(&pcfg->panel->panel_lock);
 		break;
 	default:
 		return -EFAULT;

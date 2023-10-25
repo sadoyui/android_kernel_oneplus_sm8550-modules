@@ -280,16 +280,18 @@ enum IRIS_MEMC_MODE {
 	MEMC_DUAL_VIDEO_ENABLE,
 	MEMC_SINGLE_GAME_ENABLE,
 	MEMC_DUAL_EXTMV_ENABLE,
+	MEMC_DUAL_GAME_ENABLE,
 };
 
 struct iris_pq_setting {
 	u32 cmcolortempmode:2;
-	u32 cmcolorgamut:4;
+	u32 cmcolorgamut:8;
 	u32 alenable:1;
 	u32 demomode:3;
 	u32 sdr2hdr:4;
 	u32 readingmode:4;
-	u32 reserved:14;
+	u32 edr_ratio:2;   // 0x1 2times, 0x2 2.5times 0x3 3 times
+	u32 reserved:8;
 };
 
 enum IRIS_PERF_KT {
@@ -405,6 +407,8 @@ struct iris_memc_info {
 	u32 osd_window[4];
 	u32 mv_hres;
 	u32 mv_vres;
+	u32 latencyValue[64];
+	u32 OSDProtection[64];
 };
 
 enum low_latency_mode {
@@ -617,7 +621,14 @@ enum iris_config_type {
 	IRIS_HDR_PREPARE = 90,
 	IRIS_HDR_COMPLETE = 91,
 	IRIS_MCF_DATA = 92,
+	IRIS_BLENDING_CSR_CTRL = 93,
+	IRIS_SET_DPP_APL_ABS = 94,
+	IRIS_SET_DPP_APL_RES = 95,
+	IRIS_GET_DPP_MCU_RES = 96,
+	IRIS_ENABLE_DPP_APL = 97,
+	IRIS_GET_DPP_APL_RES = 98,
 	IRIS_PANEL_NITS = 99,
+	IRIS_DUMP_APL_PER_FRAME = 100,
 
 	IRIS_DBG_TARGET_REGADDR_VALUE_GET = 103,
 	IRIS_DBG_TARGET_REG_DUMP = 104,
@@ -628,6 +639,9 @@ enum iris_config_type {
 	IRIS_DBG_TARGET_REGADDR_VALUE_SET2 = 112,
 	IRIS_DEBUG_CAP = 113,
 	IRIS_MIPI_RX_VALIDATE = 114,
+	IRIS_CLEAR_FRC_MIF_INT = 116,
+	IRIS_GET_FRC_MIF_INTRAW = 117,
+	IRIS_GET_MEMC_REG_STATUS = 118,
 	IRIS_MODE_SET = 120,
 	IRIS_VIDEO_FRAME_RATE_SET = 121,
 	IRIS_OUT_FRAME_RATE_SET = 122,	// debug only

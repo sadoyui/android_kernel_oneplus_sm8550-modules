@@ -21,11 +21,7 @@ enum IRIS_MEMC_CTRL_OP {
 	MEMC_CTRL_FRC_POST,
 	MEMC_CTRL_DUAL_FRC2PT,
 	MEMC_CTRL_VFR_DISABLE,
-	MEMC_CTRL_PANEL_TE_SWITCH,
-	MEMC_CTRL_PANEL_TP_VSYNC_SWITCH,
-	MEMC_CTRL_PANEL_ADJUST_TP_SCANLINE,
-	MEMC_CTRL_PANEL_RESET_TP_SCANLINE,
-	MEMC_CTRL_SWITCH_TIMEOUT = 0x20,
+	MEMC_CTRL_SWITCH_TIMEOUT = 0x10,
 };
 
 enum dsc_ratio_type {
@@ -177,7 +173,7 @@ void iris_parse_frc_dec_initial_delay(struct device_node *np);
 int iris_dbgfs_memc_init(struct dsi_display *display);
 void iris_frc_ioinc_change(void);
 void iris_frc_dsc_change(void);
-void iris_sr_change(int inHeight, int inWidth, int outHeight, int outWidth, bool sr_sel);
+void iris_sr_change(int inHeight, int inWidth, int outHeight, int outWidth, bool sr_sel, bool update);
 void iris_memc_frc_phase_update(void);
 void iris_memc_ctrl_frc_prepare(void);
 void iris_memc_ctrl_pt_post(void);
@@ -192,5 +188,6 @@ void iris_dport_output_mode_reset(void);
 void iris_mcu_state_set(u32 mode);
 void iris_mcu_mode_reset(void);
 u32 iris_mcu_mode_get(void);
-
+void iris_pt_sr_restore(void);
+void iris_pwil_idle_mask_update(bool enable);
 #endif

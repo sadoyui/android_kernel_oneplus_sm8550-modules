@@ -24,6 +24,7 @@
 #include "dsi_iris_i3c.h"
 #include "dsi_iris_dts_fw.h"
 #include <linux/kobject.h>
+#include <soc/oplus/system/oplus_project.h>
 
 #define DUMP_BUFFER_LENGTH (2*1024)
 static int _debug_lp_opt;
@@ -388,6 +389,13 @@ int iris_pmu_dscu_set(bool on)
 	return rt;
 }
 
+bool iris_is_pmu_dscu_on(void)
+{
+	uint32_t mask = iris_get_regval_bitmask(IRIS_IP_SYS, ID_SYS_MPG);
+	IRIS_LOGD("%s: mask: %x", __func__, mask);
+	return (mask & DSCU_PWR) == DSCU_PWR;
+}
+
 /* power on & off HDR domain
  *   type: 0 -- power off HDR & HDR_COLOR
  *         1 -- power on HDR, power off HDR_COLOER
@@ -551,6 +559,43 @@ void _iris_disable_temp_sensor(void)
 		IRIS_LOGE("i2c disable tempsensor failed, line:%d", __LINE__);
 	if (iris_ioctl_i2c_write(0xf0010030, 0) < 0)
 		IRIS_LOGE("i2c disable tempsensor failed, line:%d", __LINE__);
+}
+
+void _iris_bulksram_power_domain_proc(void)
+{
+	u32 i, value;
+	int rc = 0;
+
+	for (i = 0; i < 5; i++)
+	{
+		usleep_range(1000, 1010);
+		rc = iris_ioctl_i2c_write(0xf0000068, 0x43);
+		if (rc < 0)
+		{
+			IRIS_LOGE("i2c enable bulksram power failed, rc:%d", rc);
+			continue;
+		}
+		rc = iris_ioctl_i2c_read(0xf0000068, &value);
+		if ((rc < 0) || value != 0x43)
+		{
+			IRIS_LOGE("i2c read bulksram power failed, value:%d, rc:%d", value, rc);
+			continue;
+		}
+		rc = iris_ioctl_i2c_write(0xf0000068, 0x03);
+		if (rc < 0)
+		{
+			IRIS_LOGE("i2c disable bulksram power failed, rc:%d", rc);
+			continue;
+		}
+		rc = iris_ioctl_i2c_read(0xf0000068, &value);
+		if ((rc < 0) || value != 0x03)
+		{
+			IRIS_LOGE("i2c read bulksram power failed, value:%d, rc:%d", value, rc);
+			continue;
+		}
+		break;
+	}
+	IRIS_LOGI("%s %d", __func__, i);
 }
 
 bool iris_is_sleep_abyp_mode(void)
@@ -793,7 +838,7 @@ int iris_lp_abyp_enter(void)
 	pcfg = iris_get_cfg();
 
 	lp_ktime0 = ktime_get();
-	toler_cnt = 3;
+	toler_cnt = RETRY_MAX_CNT;
 
 	if (_iris_abyp_enter_precheck() != 0){
 		pcfg->abyp_ctrl.abyp_failed = true;
@@ -837,6 +882,11 @@ enter_abyp_begin:
 	}
 	IRIS_LOGI("Enter abyp done, spend time %d us",
 			(u32)ktime_to_us(ktime_get()) - (u32)ktime_to_us(lp_ktime0));
+
+	if (abyp_status_gpio == 1 && is_project(22811)) {
+		iris_send_tsp_vsync_scanline_cmd(false);
+	}
+
 #ifdef IRIS_EXT_CLK
 	iris_clk_disable(pcfg->panel);
 #endif
@@ -848,7 +898,7 @@ int iris_lp_abyp_exit(void)
 {
 	struct iris_cfg *pcfg;
 	int abyp_status_gpio;
-	int toler_cnt = 3;
+	int toler_cnt = RETRY_MAX_CNT;
 	int rc = 0;
 	ktime_t lp_ktime0;
 
@@ -897,8 +947,10 @@ exit_abyp_loop:
 		iris_dump_status();
 		if (toler_cnt > 0) {
 			IRIS_LOGW("Exit abyp retry %d", toler_cnt);
-			iris_reset_chip();
-			pcfg->abyp_ctrl.preloaded = false;
+			if (toler_cnt < RETRY_MAX_CNT) {
+				iris_reset_chip();
+				pcfg->abyp_ctrl.preloaded = false;
+			} /* send one wired cmd again*/
 			toler_cnt--;
 			goto exit_abyp_loop;
 		} else {
@@ -910,6 +962,9 @@ exit_abyp_loop:
 		}
 
 	} else {
+        if (is_project(22811))
+		    iris_send_tsp_vsync_scanline_cmd(true);
+
 		if (pcfg->lp_ctrl.abyp_lp == 2 || !pcfg->abyp_ctrl.preloaded) {
 			IRIS_LOGI("abyp light up iris");
 			iris_lightup(pcfg->panel);
@@ -919,6 +974,7 @@ exit_abyp_loop:
 			iris_switch_from_abyp_to_pt();
 		}
 	}
+
 	IRIS_LOGI("Exit abyp done, spend time %d us",
 		(u32)ktime_to_us(ktime_get()) - (u32)ktime_to_us(lp_ktime0));
 
@@ -961,6 +1017,8 @@ bool iris_abyp_switch_proc(struct dsi_display *display, int mode)
 
 	pcfg = iris_get_cfg();
 	prev_mode = pcfg->abyp_ctrl.abypass_mode;
+	if ((mode & BIT(0)) == ANALOG_BYPASS_MODE)
+		atomic_set(&pcfg->iris_esd_flag, 0);
 
 	if (pcfg->rx_mode != pcfg->tx_mode) {
 		IRIS_LOGE("abyp can't be supported! rx_mode != tx_mode!");
@@ -1212,6 +1270,10 @@ void iris_set_metadata(bool panel_lock)
 	uint32_t osd_meta = (pcfg->metadata >> 2) & 0x3;
 	uint32_t dpp_meta = (pcfg->metadata >> 4) & 0x3;
 	uint32_t pwil_meta = (pcfg->metadata >> 6) & 0x3;
+	uint32_t framecount_meta = (pcfg->metadata >> 8) & 0xf;
+
+	if (framecount_meta == 0)
+		framecount_meta = 2;
 
 	if (pcfg->metadata == 0)
 		return;
@@ -1259,10 +1321,10 @@ void iris_set_metadata(bool panel_lock)
 
 	switch (pwil_meta) {
 	case 0x2:
-		iris_pwil_dport_mode(false);
+		iris_pwil_dport_disable(false, framecount_meta);
 		break;
 	case 0x3:
-		iris_pwil_dport_mode(true);
+		iris_pwil_dport_disable(true, framecount_meta);
 		break;
 	default:
 		break;
@@ -1469,6 +1531,9 @@ exit:
 				rc = 2;
 			else
 				rc = 1;
+		} else {
+			atomic_set(&pcfg->iris_esd_flag, 1);
+			IRIS_LOGI("%s(), %d: set iris_esd_flag = 1", __func__, __LINE__);
 		}
 	} else {
 		if ((iris_esd_ctrl_get() & 0x8) ||
@@ -1852,6 +1917,8 @@ static ssize_t _iris_abyp_write(uint32_t val)
 		iris_abyp_switch_proc(pcfg->display, PASS_THROUGH_MODE);
 	} else if (val == 25) {
 		iris_abyp_switch_proc(pcfg->display, ANALOG_BYPASS_MODE);
+	} else if (val == 26) {
+		iris_set_two_wire0_enable();
 	}
 	mutex_unlock(&pcfg->panel->panel_lock);
 

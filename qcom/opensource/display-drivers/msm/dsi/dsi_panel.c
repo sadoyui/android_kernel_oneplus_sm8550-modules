@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2021-2023 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2021-2022 Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2016-2021, The Linux Foundation. All rights reserved.
  */
 
@@ -29,7 +29,12 @@
 #include "../oplus/oplus_display_interface.h"
 #include "../oplus/oplus_display_panel_seed.h"
 #include "sde_trace.h"
+#include <soc/oplus/system/oplus_project.h>
 #endif /* OPLUS_FEATURE_DISPLAY */
+
+#ifdef OPLUS_FEATURE_DISPLAY_TEMP_COMPENSATION
+#include "../oplus/oplus_display_temp_compensation.h"
+#endif /* OPLUS_FEATURE_DISPLAY_TEMP_COMPENSATION */
 
 #ifdef OPLUS_FEATURE_DISPLAY_ONSCREENFINGERPRINT
 #include "../oplus/oplus_onscreenfingerprint.h"
@@ -449,10 +454,23 @@ static int dsi_panel_power_on(struct dsi_panel *panel)
 	}
 
 #ifdef OPLUS_FEATURE_DISPLAY
-	oplus_panel_gpio_on(panel);
-#endif /* OPLUS_FEATURE_DISPLAY */
+	if (!panel->oplus_priv.oplus_disp_hw_seq_modify_flag) {
+		oplus_panel_gpio_on(panel);
+	}
 
+	if (!strcmp(panel->name, "AC052 P 3 A0003 dsc cmd mode panel")
+		|| !strcmp(panel->name, "AC052 S 3 A0001 dsc cmd mode panel")
+		|| !strcmp(panel->name, "AA536 P 3 A0001 dsc cmd mode panel")) {
+		rc = 0;
+	} else {
+			if (panel->oplus_priv.oplus_disp_hw_seq_modify_flag) {
+				usleep_range(10 * 1000, (10 * 1000) + 100);
+			}
+			rc = dsi_panel_reset(panel);
+	}
+#else
 	rc = dsi_panel_reset(panel);
+#endif /* OPLUS_FEATURE_DISPLAY */
 	if (rc) {
 		DSI_ERR("[%s] failed to reset panel, rc=%d\n", panel->name, rc);
 		goto error_disable_gpio;
@@ -496,12 +514,13 @@ static int dsi_panel_power_off(struct dsi_panel *panel)
 	if (gpio_is_valid(panel->reset_config.reset_gpio) &&
 					!panel->reset_gpio_always_on)
 		gpio_set_value(panel->reset_config.reset_gpio, 0);
-
 	if (gpio_is_valid(panel->reset_config.lcd_mode_sel_gpio))
 		gpio_set_value(panel->reset_config.lcd_mode_sel_gpio, 0);
 
 #ifdef OPLUS_FEATURE_DISPLAY
-	oplus_panel_gpio_off(panel);
+	if (!panel->oplus_priv.oplus_disp_hw_seq_modify_flag) {
+		oplus_panel_gpio_off(panel);
+	}
 #endif /* OPLUS_FEATURE_DISPLAY */
 
 	if (gpio_is_valid(panel->panel_test_gpio)) {
@@ -524,7 +543,6 @@ static int dsi_panel_power_off(struct dsi_panel *panel)
 	if (rc)
 		DSI_ERR("[%s] failed to enable vregs, rc=%d\n",
 				panel->name, rc);
-
 #ifdef OPLUS_FEATURE_DISPLAY
 #if defined(CONFIG_PXLW_IRIS)
 	if (iris_is_chip_supported() && (panel->is_secondary)) {
@@ -587,6 +605,14 @@ int dsi_panel_tx_cmd_set(struct dsi_panel *panel,
 
 #if defined(CONFIG_PXLW_IRIS)
 	if (iris_is_chip_supported() && iris_is_pt_mode(panel)) {
+		for (i = 0; i < count; i++) {
+			cmds = mode->priv_info->cmd_sets[type].cmds + i;
+			if (state == DSI_CMD_SET_STATE_LP)
+				cmds->msg.flags |= MIPI_DSI_MSG_USE_LPM;
+
+			if (type == DSI_CMD_SET_VID_SWITCH_OUT)
+				cmds->msg.flags |= MIPI_DSI_MSG_ASYNC_OVERRIDE;
+		}
 		rc = iris_pt_send_panel_cmd(panel, &(mode->priv_info->cmd_sets[type]));
 		if (rc)
 			DSI_ERR("iris_pt_send_panel_cmd failed\n");
@@ -977,7 +1003,7 @@ static int dsi_panel_parse_timing(struct dsi_mode_info *mode,
 
 	rc = utils->read_u64(utils->data,
 			"qcom,mdss-dsi-panel-clockrate", &tmp64);
-	if (rc == -EOVERFLOW || rc == -ERANGE) {
+	if (rc == -EOVERFLOW) {
 		tmp64 = 0;
 		rc = utils->read_u32(utils->data,
 			"qcom,mdss-dsi-panel-clockrate", (u32 *)&tmp64);
@@ -1304,13 +1330,13 @@ static int dsi_panel_parse_triggers(struct dsi_host_common_cfg *host,
 		} else if (!strcmp(trig, "trigger_sw_te")) {
 			host->dma_cmd_trigger = DSI_TRIGGER_SW_TE;
 		} else {
-			DSI_ERR("[%s] Unrecognized cmd dma trigger type (%s)\n",
+			DSI_ERR("[%s] Unrecognized mdp trigger type (%s)\n",
 			       name, trig);
 			rc = -EINVAL;
 		}
 
 	} else {
-		DSI_DEBUG("[%s] Falling back to default cmd dma trigger\n", name);
+		DSI_DEBUG("[%s] Falling back to default MDP trigger\n", name);
 		host->dma_cmd_trigger = DSI_TRIGGER_SW;
 	}
 
@@ -2064,6 +2090,10 @@ const char *cmd_set_prop_map[DSI_CMD_SET_MAX] = {
 	"qcom,mdss-dsi-post-mode-switch-on-command",
 	"qcom,mdss-dsi-qsync-on-commands",
 	"qcom,mdss-dsi-qsync-off-commands",
+#ifdef OPLUS_FEATURE_DISPLAY_TEMP_COMPENSATION
+	"qcom,mdss-dsi-read-temp-compensation-reg-command",
+	"qcom,mdss-dsi-temperature-compensation-command",
+#endif /* OPLUS_FEATURE_DISPLAY_TEMP_COMPENSATION */
 #ifdef OPLUS_FEATURE_DISPLAY_ONSCREENFINGERPRINT
 	"qcom,mdss-dsi-hbm-on-command",
 	"qcom,mdss-dsi-hbm-off-command",
@@ -2102,6 +2132,11 @@ const char *cmd_set_prop_map[DSI_CMD_SET_MAX] = {
 	"qcom,mdss-dsi-loading-effect-off-command",
 	"qcom,mdss-dsi-hbm-enter-switch-command",
 	"qcom,mdss-dsi-hbm-exit-switch-command",
+	"qcom,mdss-dsi-pwm-switch-high-command",
+	"qcom,mdss-dsi-pwm-switch-low-command",
+	"qcom,mdss-dsi-timming-pwm-switch-high-command",
+	"qcom,mdss-dsi-timming-pwm-switch-low-command",
+	"qcom,mdss-dsi-pwm-switch-disable-compensation-command",
 	"qcom,mdss-dsi-qsync-min-fps-0-command",
 	"qcom,mdss-dsi-qsync-min-fps-1-command",
 	"qcom,mdss-dsi-qsync-min-fps-2-command",
@@ -2122,6 +2157,7 @@ const char *cmd_set_prop_map[DSI_CMD_SET_MAX] = {
 	"qcom,mdss-dsi-cabc-video-command",
 	"qcom,mdss-dsi-esd-switch-page-command",
 	"qcom,dsi-panel-date-switch-command",
+	"qcom,mdss-dsi-panel-info-switch-page-command",
 	"qcom,mdss-dsi-panel-init-command",
 	"qcom,mdss-dsi-pwm-turbo-on-command",
 	"qcom,mdss-dsi-pwm-turbo-off-command",
@@ -2130,10 +2166,18 @@ const char *cmd_set_prop_map[DSI_CMD_SET_MAX] = {
 	"qcom,mdss-dsi-pwm-turbo-aor-on-command",
 	"qcom,mdss-dsi-pwm-turbo-aor-off-command",
 	"qcom,mdss-dsi-pwm-turbo-timing-switch-command",
+	"qcom,mdss-dsi-bl-demua1-command",
+	"qcom,mdss-dsi-bl-demua2-command",
+	"qcom,mdss-dsi-bl-demua3-command",
+	"qcom,mdss-dsi-bl-demua4-command",
+	"qcom,mdss-dsi-bl-demua5-command",
+	"qcom,mdss-dsi-bl-demua6-command",
 #endif /* OPLUS_FEATURE_DISPLAY */
 #if defined(CONFIG_PXLW_IRIS)
 	"qcom,mdss-dsi-iris-switch-tsp-vsync-scanline-command",
 #endif
+	"qcom,mdss-dsi-default-switch-page-command",
+	"qcom,mdss-dsi-skipframe-dbv-command",
 };
 
 const char *cmd_set_state_map[DSI_CMD_SET_MAX] = {
@@ -2162,6 +2206,10 @@ const char *cmd_set_state_map[DSI_CMD_SET_MAX] = {
 	"qcom,mdss-dsi-post-mode-switch-on-command-state",
 	"qcom,mdss-dsi-qsync-on-commands-state",
 	"qcom,mdss-dsi-qsync-off-commands-state",
+#ifdef OPLUS_FEATURE_DISPLAY_TEMP_COMPENSATION
+	"qcom,mdss-dsi-read-temp-compensation-reg-command-state",
+	"qcom,mdss-dsi-temperature-compensation-command-state",
+#endif /* OPLUS_FEATURE_DISPLAY_TEMP_COMPENSATION */
 #ifdef OPLUS_FEATURE_DISPLAY_ONSCREENFINGERPRINT
 	"qcom,mdss-dsi-hbm-on-command-state",
 	"qcom,mdss-dsi-hbm-off-command-state",
@@ -2200,6 +2248,11 @@ const char *cmd_set_state_map[DSI_CMD_SET_MAX] = {
 	"qcom,mdss-dsi-loading-effect-off-command-state",
 	"qcom,mdss-dsi-hbm-enter-switch-command-state",
 	"qcom,mdss-dsi-hbm-exit-switch-command-state",
+	"qcom,mdss-dsi-pwm-switch-high-command-state",
+	"qcom,mdss-dsi-pwm-switch-low-command-state",
+	"qcom,mdss-dsi-timming-pwm-switch-high-command-state",
+	"qcom,mdss-dsi-timming-pwm-switch-low-command-state",
+	"qcom,mdss-dsi-pwm-switch-disable-compensation-command-state",
 	"qcom,mdss-dsi-qsync-min-fps-0-command-state",
 	"qcom,mdss-dsi-qsync-min-fps-1-command-state",
 	"qcom,mdss-dsi-qsync-min-fps-2-command-state",
@@ -2220,6 +2273,7 @@ const char *cmd_set_state_map[DSI_CMD_SET_MAX] = {
 	"qcom,mdss-dsi-cabc-video-command",
 	"qcom,mdss-dsi-esd-switch-page-command-state",
 	"qcom,dsi-panel-date-switch-command-state",
+	"qcom,mdss-dsi-panel-info-switch-page-command-state",
 	"qcom,mdss-dsi-panel-init-command-state",
 	"qcom,mdss-dsi-pwm-turbo-on-command-state",
 	"qcom,mdss-dsi-pwm-turbo-off-command-state",
@@ -2228,10 +2282,18 @@ const char *cmd_set_state_map[DSI_CMD_SET_MAX] = {
 	"qcom,mdss-dsi-pwm-turbo-aor-on-command-state",
 	"qcom,mdss-dsi-pwm-turbo-aor-off-command-state",
 	"qcom,mdss-dsi-pwm-turbo-timing-switch-command-state",
+	"qcom,mdss-dsi-bl-demua1-command-state",
+	"qcom,mdss-dsi-bl-demua2-command-state",
+	"qcom,mdss-dsi-bl-demua3-command-state",
+	"qcom,mdss-dsi-bl-demua4-command-state",
+	"qcom,mdss-dsi-bl-demua5-command-state",
+	"qcom,mdss-dsi-bl-demua6-command-state",
 #endif /* OPLUS_FEATURE_DISPLAY */
 #if defined(CONFIG_PXLW_IRIS)
 	"qcom,mdss-dsi-iris-switch-tsp-vsync-scanline-command-state",
 #endif
+	"qcom,mdss-dsi-default-switch-page-command-state",
+	"qcom,mdss-dsi-skipframe-dbv-command-state",
 };
 
 #ifdef OPLUS_FEATURE_DISPLAY
@@ -2964,13 +3026,13 @@ static int dsi_panel_parse_bl_config(struct dsi_panel *panel)
 	}
 #endif /* OPLUS_FEATURE_DISPLAY */
 
-	state = utils->get_property(utils->data, "qcom,bl-dcs-cmd-state", NULL);
+	state = utils->get_property(utils->data, "qcom,bl-dsc-cmd-state", NULL);
 	if (!state || !strcmp(state, "dsi_hs_mode"))
 		panel->bl_config.lp_mode = false;
 	else if (!strcmp(state, "dsi_lp_mode"))
 		panel->bl_config.lp_mode = true;
 	else
-		DSI_ERR("bl-dcs-cmd-state command state unrecognized-%s\n",
+		DSI_ERR("bl-dsc-cmd-state command state unrecognized-%s\n",
 			state);
 
 	if (panel->bl_config.type == DSI_BACKLIGHT_PWM) {
@@ -4466,7 +4528,6 @@ void dsi_panel_calc_dsi_transfer_time(struct dsi_host_common_cfg *config,
 	u32 jitter_numer, jitter_denom, prefill_lines;
 	u32 default_prefill_lines, actual_prefill_lines, vtotal;
 	u32 min_threshold_us, prefill_time_us, max_transfer_us, packet_overhead;
-	u32 bits_per_symbol = 16, num_of_symbols = 7; /* For Cphy */
 	u16 bpp;
 
 	/* Packet overhead in bits,
@@ -4511,11 +4572,6 @@ void dsi_panel_calc_dsi_transfer_time(struct dsi_host_common_cfg *config,
 	}
 
 	timing->min_dsi_clk_hz = min_bitclk_hz;
-
-	if (config->phy_type == DSI_PHY_TYPE_CPHY) {
-		do_div(timing->min_dsi_clk_hz, bits_per_symbol);
-		timing->min_dsi_clk_hz *= num_of_symbols;
-	}
 
 	/*
 	 * Apart from prefill line time, we need to take into account RSCC mode threshold time. In
@@ -4993,6 +5049,15 @@ int dsi_panel_prepare(struct dsi_panel *panel)
 		}
 	}
 
+#ifdef OPLUS_FEATURE_DISPLAY
+	if (!strcmp(panel->name, "AC052 P 3 A0003 dsc cmd mode panel")
+		|| !strcmp(panel->name, "AC052 S 3 A0001 dsc cmd mode panel")
+		|| !strcmp(panel->name, "AA536 P 3 A0001 dsc cmd mode panel")) {
+		usleep_range(10*1000, (10*1000)+100);
+		dsi_panel_reset(panel);
+	}
+#endif /* OPLUS_FEATURE_DISPLAY */
+
 	rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_SET_PRE_ON);
 	if (rc) {
 		DSI_ERR("[%s] failed to send DSI_CMD_SET_PRE_ON cmds, rc=%d\n",
@@ -5273,6 +5338,11 @@ int dsi_panel_switch_cmd_mode_in(struct dsi_panel *panel)
 int dsi_panel_switch(struct dsi_panel *panel)
 {
 	int rc = 0;
+#if defined(CONFIG_PXLW_IRIS)
+	enum dsi_cmd_set_type TIMING_SWITCH_TYPE_ID = DSI_CMD_SET_TIMING_SWITCH;
+	if (is_project(22811))
+		TIMING_SWITCH_TYPE_ID = DSI_CMD_SET_IRIS_SWITCH_TSP_VSYNC_SCANLINE;
+#endif
 
 	if (!panel) {
 		DSI_ERR("Invalid params\n");
@@ -5292,9 +5362,9 @@ int dsi_panel_switch(struct dsi_panel *panel)
 		iris_pre_switch(panel, &panel->cur_mode->timing);
 	if (iris_is_chip_supported() && iris_is_pt_mode(panel)) {
 		rc = iris_switch(panel,
-				&panel->cur_mode->priv_info->cmd_sets[DSI_CMD_SET_IRIS_SWITCH_TSP_VSYNC_SCANLINE],
+				&panel->cur_mode->priv_info->cmd_sets[TIMING_SWITCH_TYPE_ID],
 				&panel->cur_mode->timing);
-		pr_err("dsi_cmd %s\n", cmd_set_prop_map[DSI_CMD_SET_IRIS_SWITCH_TSP_VSYNC_SCANLINE]);
+		pr_info("IRIS_LOG: dsi_cmd %s\n", cmd_set_prop_map[TIMING_SWITCH_TYPE_ID]);
 	} else
 #endif
 
@@ -5304,6 +5374,11 @@ int dsi_panel_switch(struct dsi_panel *panel)
 		       panel->name, rc);
 
 #ifdef OPLUS_FEATURE_DISPLAY
+	/* pwm switch due to timing switch*/
+	if (panel->oplus_priv.pwm_switch_support) {
+		oplus_panel_pwm_switch_timing_switch(panel);
+	}
+
 	if (oplus_adfr_is_support()) {
 		panel->is_switching = true;
 		/* reset adfr auto mode status as panel mode will be change after timing switch */

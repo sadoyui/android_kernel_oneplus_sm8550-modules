@@ -940,10 +940,5 @@ int dsi_ctrl_get_io_resources(struct msm_io_res *io_res);
  * dsi_ctrl_toggle_error_interrupt_status() - Toggles error interrupt status
  */
 void dsi_ctrl_toggle_error_interrupt_status(struct dsi_ctrl *dsi_ctrl, bool enable);
-
-/**
- * dsi_ctrl_transfer_cleanup() - Clean up post command transfer
- * @dsi_ctrl:                 DSI controller handle.
- */
-void dsi_ctrl_transfer_cleanup(struct dsi_ctrl *dsi_ctrl);
+int dsi_ctrl_override_dma_cmd_trig(struct dsi_ctrl *dsi_ctrl, enum dsi_trigger_type type);
 #endif /* _DSI_CTRL_H_ */

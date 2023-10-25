@@ -69,7 +69,8 @@ void iris_query_capability(struct dsi_panel *panel)
 		caps.asic_type ? "ASIC" : "FPGA", caps.asic_type - 1,
 		caps.feature_enabled);
 
-	if (is_project(22811)) {
+	if (is_project(22811) || is_project(22851) || is_project(22635) || is_project(23603) ||
+			is_project(22714) || is_project(23667)) {
 		iris_chip_enable = chip_enable;
 		if (caps.feature_enabled & (1 << (SUPPORT_SOFT_IRIS - 16)))
 			soft_iris_enable = true;

@@ -4,20 +4,26 @@
 ** File : oplus_display_panel_feature.c
 ** Description : oplus display panel char dev  /dev/oplus_panel
 ** Version : 1.0
-** Date : 2021/11/17
+** Date : 2022/08/01
 ** Author : Display
 ******************************************************************/
 #include <drm/drm_mipi_dsi.h>
+#include "sde_trace.h"
 #include "dsi_parser.h"
 #include "dsi_display.h"
 #include "dsi_panel.h"
 #include "dsi_clk.h"
 #include "oplus_bl.h"
+#include <linux/ktime.h>
 /* OPLUS_FEATURE_ADFR, include header file */
 #include "oplus_adfr.h"
 #include "oplus_display_panel_feature.h"
 #include "oplus_display_private_api.h"
 #include "oplus_display_interface.h"
+
+#ifdef OPLUS_FEATURE_DISPLAY_TEMP_COMPENSATION
+#include "oplus_display_temp_compensation.h"
+#endif /* OPLUS_FEATURE_DISPLAY_TEMP_COMPENSATION */
 
 #ifdef OPLUS_FEATURE_DISPLAY_ONSCREENFINGERPRINT
 #include "oplus_onscreenfingerprint.h"
@@ -70,6 +76,10 @@ int oplus_panel_get_serial_number_info(struct dsi_panel *panel)
 			/* Default  read conut 5 */
 			panel->oplus_ser.serial_number_conut = 5;
 		}
+
+		panel->oplus_ser.is_switch_page = utils->read_bool(utils->data,
+			"oplus,dsi-serial-number-switch-page");
+		LCD_INFO("oplus,dsi-serial-number-switch-page: %s", panel->oplus_ser.is_switch_page ? "true" : "false");
 	}
 	return 0;
 }
@@ -114,6 +124,16 @@ int oplus_panel_features_config(struct dsi_panel *panel)
 			"oplus,pwm-turbo-enabled-default");
 	LCD_INFO("oplus,pwm-turbo-enabled-default: %s\n",
 			panel->oplus_priv.pwm_turbo_enabled ? "true" : "false");
+
+	panel->oplus_priv.pwm_switch_support = utils->read_bool(utils->data,
+			"oplus,pwm-switch-support");
+	LCD_INFO("oplus,pwm-switch-support: %s\n",
+			panel->oplus_priv.pwm_switch_support ? "true" : "false");
+
+	panel->oplus_priv.dynamic_demua_support = utils->read_bool(utils->data,
+			"oplus,dynamic-demua-support");
+	LCD_INFO("oplus,dynamic-demua-supportt: %s\n",
+			panel->oplus_priv.dynamic_demua_support ? "true" : "false");
 
 	oplus_panel_get_serial_number_info(panel);
 
@@ -211,9 +231,20 @@ void oplus_panel_update_backlight(struct dsi_panel *panel,
 		}
 	}
 #endif /* OPLUS_FEATURE_DISPLAY_ONSCREENFINGERPRINT */
+	SDE_ATRACE_BEGIN("oplus_panel_update_backlight");
+
+#ifdef OPLUS_FEATURE_DISPLAY_TEMP_COMPENSATION
+	if (oplus_temp_compensation_is_supported()) {
+		oplus_temp_compensation_cmd_set(panel, OPLUS_TEMP_COMPENSATION_BACKLIGHT_SETTING);
+	}
+	oplus_temp_compensation_wait_for_vsync_set = false;
+#endif /* OPLUS_FEATURE_DISPLAY_TEMP_COMPENSATION */
 
 	/* backlight value mapping */
 	oplus_panel_global_hbm_mapping(panel, &bl_lvl);
+
+	/* pwm switch due to backlight change*/
+	oplus_panel_pwm_switch_backlight(panel, bl_lvl);
 
 	/* will inverted display brightness value */
 	if (panel->bl_config.bl_inverted_dbv)
@@ -221,6 +252,9 @@ void oplus_panel_update_backlight(struct dsi_panel *panel,
 	else
 		inverted_dbv_bl_lvl = bl_lvl;
 
+	if (!strcmp(panel->oplus_priv.vendor_name, "TM_NT37705") && (bl_lvl > 1)) {
+		oplus_display_update_dbv(panel);
+	} else {
 	/* OPLUS_FEATURE_ADFR, backlight filter for OA */
 	if (oplus_adfr_is_support()) {
 		/* if backlight cmd is set after qsync window setting and qsync is enable, filter it
@@ -249,15 +283,65 @@ void oplus_panel_update_backlight(struct dsi_panel *panel,
 		if (rc < 0)
 			LCD_ERR("failed to update dcs backlight:%d\n", bl_lvl);
 	}
+	}
 #if defined(CONFIG_PXLW_IRIS)
 	if (iris_is_chip_supported() && !iris_is_pt_mode(panel))
 		rc = iris_update_backlight_value(bl_lvl);
 #endif
 
-	oplus_panel_restore_auto_mode(panel);
+#ifdef OPLUS_FEATURE_DISPLAY_TEMP_COMPENSATION
+	if (oplus_temp_compensation_is_supported()) {
+		oplus_temp_compensation_first_half_frame_cmd_set(panel);
+	}
+#endif /* OPLUS_FEATURE_DISPLAY_TEMP_COMPENSATION */
 
+	SDE_ATRACE_INT("current_bl_lvl", bl_lvl);
+
+	oplus_panel_restore_auto_mode(panel);
 	LCD_DEBUG_BACKLIGHT("[%s] panel backlight changed: %d -> %d\n",
 			panel->oplus_priv.vendor_name, oplus_last_backlight, bl_lvl);
 
 	oplus_last_backlight = bl_lvl;
+	SDE_ATRACE_END("oplus_panel_update_backlight");
 }
+
+void oplus_printf_backlight_log(struct dsi_display *display, u32 bl_lvl) {
+	struct timespec64 now;
+	struct tm broken_time;
+	static time64_t time_last = 0;
+	struct backlight_log *bl_log;
+	int i = 0;
+	int len = 0;
+	char backlight_log_buf[1024];
+
+	ktime_get_real_ts64(&now);
+	time64_to_tm(now.tv_sec, 0, &broken_time);
+	if (now.tv_sec - time_last >= 60) {
+		pr_info("<%s> dsi_display_set_backlight time:%02d:%02d:%02d.%03ld,bl_lvl:%d\n",
+			display->panel->oplus_priv.vendor_name, broken_time.tm_hour, broken_time.tm_min,
+			broken_time.tm_sec, now.tv_nsec / 1000000, bl_lvl);
+		time_last = now.tv_sec;
+	}
+
+	if (!strcmp(display->display_type, "secondary")) {
+		bl_log = &oplus_bl_log[DISPLAY_SECONDARY];
+	} else {
+		bl_log = &oplus_bl_log[DISPLAY_PRIMARY];
+	}
+
+	bl_log->backlight[bl_log->bl_count] = bl_lvl;
+	bl_log->past_times[bl_log->bl_count] = now;
+	bl_log->bl_count++;
+	if (bl_log->bl_count >= BACKLIGHT_CACHE_MAX) {
+		bl_log->bl_count = 0;
+		memset(backlight_log_buf, 0, sizeof(backlight_log_buf));
+		for (i = 0; i < BACKLIGHT_CACHE_MAX; i++) {
+			time64_to_tm(bl_log->past_times[i].tv_sec, 0, &broken_time);
+			len += snprintf(backlight_log_buf + len, sizeof(backlight_log_buf) - len,
+				"%02d:%02d:%02d.%03ld:%d,", broken_time.tm_hour, broken_time.tm_min,
+				broken_time.tm_sec, bl_log->past_times[i].tv_nsec / 1000000, bl_log->backlight[i]);
+		}
+		pr_info("<%s> len:%d dsi_display_set_backlight %s\n", display->panel->oplus_priv.vendor_name, len, backlight_log_buf);
+	}
+}
+
